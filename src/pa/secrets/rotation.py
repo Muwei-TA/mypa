@@ -5,7 +5,7 @@ secrets_meta tracks rotation metadata only, never values. Reminders: P2 at
 completes only after a connectivity test passes.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
@@ -29,7 +29,7 @@ def register(connection, *, ref: str, provider: str, rotate_every_days: int) -> 
 
 def due(connection, *, at: datetime | None = None) -> list[dict]:
     """List secrets with their reminder level (P2/P1/none)."""
-    moment = at or datetime.now(datetime.UTC)
+    moment = at or datetime.now(UTC)
     rows = connection.execute(
         text("SELECT ref,provider,rotated_at,rotate_every_days,last_reminded_at FROM secrets_meta")
     ).mappings()

@@ -59,6 +59,21 @@ class SkillTestInput(Model):
     input: dict = Field(default_factory=dict)
 
 
+class BudgetInput(Model):
+    id: str = Field(min_length=1, max_length=64)
+    scope: str = Field(pattern="^(global|skill|engine|task)$")
+    scope_id: str | None = None
+    period: str = Field(default="day", pattern="^(day|month)$")
+    limit_cny: float | None = Field(default=None, ge=0)
+    soft_pct: int = Field(default=80, ge=1, le=100)
+
+
+class MemoryInput(Model):
+    kind: str = Field(default="fact", pattern="^(fact|lesson|context|profile)$")
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=4000)
+
+
 _STATUS_CODE = {
     "not_found": 404,
     "forbidden": 403,
@@ -482,6 +497,109 @@ def create_app(
     def search_all(q: str = Query(min_length=1), f=Depends(require_agent)):
         with f.engine.connect() as connection:
             return global_search(connection, q)
+
+    # --- M5: breaker reset, cost summary, budgets, memories ---------------
+
+    @router.post("/engines/{engine_id}:reset-breaker")
+    def engine_reset_breaker(engine_id: str, f=Depends(require_owner)):
+        from pa.obs.breaker import reset as breaker_reset
+
+        with f.engine.begin() as connection:
+            return breaker_reset(connection, engine_id)
+
+    @router.get("/cost/summary")
+    def cost_summary(
+        group_by: str = Query(pattern="^(skill|engine|day)$"),
+        from_: str | None = Query(default=None, alias="from"),
+        to: str | None = None,
+        f=Depends(require_agent),
+    ):
+        column = {"skill": "skill_id", "engine": "engine_id", "day": "date(at)"}[group_by]
+        query = (
+            f"SELECT {column} AS bucket, COUNT(*) AS calls, SUM(cost_cny) AS total_cny "
+            "FROM cost_ledger WHERE est=0"
+        )
+        params: dict = {}
+        if from_:
+            query += " AND at >= :from_"
+            params["from_"] = from_
+        if to:
+            query += " AND at <= :to"
+            params["to"] = to
+        query += f" GROUP BY {column} ORDER BY total_cny DESC LIMIT 200"
+        with f.engine.connect() as connection:
+            rows = connection.execute(text(query), params).mappings()
+            return {"group_by": group_by, "items": [dict(r) for r in rows]}
+
+    @router.get("/budgets")
+    def budgets_list(f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT * FROM budgets ORDER BY rowid")
+            ).mappings()
+            return {"items": [dict(r) for r in rows]}
+
+    @router.put("/budgets")
+    def budgets_put(body: BudgetInput, f=Depends(require_owner)):
+        with f.engine.begin() as connection:
+            connection.execute(
+                text("""
+                INSERT INTO budgets(id,scope,scope_id,period,limit_cny,soft_pct)
+                VALUES(:id,:scope,:scope_id,:period,:limit,:soft)
+                  ON CONFLICT(id) DO UPDATE SET scope=:scope,scope_id=:scope_id,
+                    period=:period,limit_cny=:limit,soft_pct=:soft
+            """),
+                {
+                    "id": body.id,
+                    "scope": body.scope,
+                    "scope_id": body.scope_id,
+                    "period": body.period,
+                    "limit": body.limit_cny,
+                    "soft": body.soft_pct,
+                },
+            )
+            row = connection.execute(
+                text("SELECT * FROM budgets WHERE id=:id"), {"id": body.id}
+            ).mappings().first()
+            return dict(row)
+
+    @router.get("/memories")
+    def memories_list(q: str | None = None, f=Depends(require_agent)):
+        from pa.memory.store import retrieve
+
+        with f.engine.connect() as connection:
+            if q:
+                return {"items": retrieve(connection, q)}
+            rows = connection.execute(
+                text("SELECT * FROM memories ORDER BY rowid DESC LIMIT 100")
+            ).mappings()
+            return {"items": [dict(r) for r in rows]}
+
+    @router.post("/memories")
+    def memories_post(body: MemoryInput, f=Depends(require_owner)):
+        from pa.memory.store import add_memory
+
+        with f.engine.begin() as connection:
+            memory_id = add_memory(
+                connection,
+                kind=body.kind,
+                title=body.title,
+                content=body.content,
+            )
+            row = connection.execute(
+                text("SELECT * FROM memories WHERE id=:id"), {"id": memory_id}
+            ).mappings().first()
+            return dict(row)
+
+    @router.delete("/memories/{memory_id}")
+    def memories_delete(memory_id: str, f=Depends(require_owner)):
+        with f.engine.begin() as connection:
+            result = connection.execute(
+                text("DELETE FROM memories WHERE id=:id"), {"id": memory_id}
+            )
+            if result.rowcount == 0:
+                raise HTTPException(status_code=404, detail="memory not found")
+            return {"deleted": memory_id}
 
     app.include_router(router)
     if login_service is not None:

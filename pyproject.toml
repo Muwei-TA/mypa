@@ -47,8 +47,11 @@ read_url = "pa.tools.read_url:ReadURL"
 [project.entry-points."pa.secrets"]
 env = "pa.secrets.resolver:EnvProvider"
 keychain = "pa.secrets.keychain:KeychainProvider"
+sops = "pa.secrets.providers:SopsProvider"
+onepassword = "pa.secrets.providers:OnePasswordProvider"
 [project.entry-points."pa.hooks"]
 [project.entry-points."pa.sandbox"]
+process = "pa.sandbox.runtime:ProcessSandbox"
 [project.entry-points."pa.effects"]
 "feishu.send" = "pa.effects.feishu:FeishuHandler"
 
