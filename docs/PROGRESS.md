@@ -4,14 +4,14 @@
 本表记录当前证据，不用测试数量或单批提交代替整阶段验收。
 开发分支 `codex/continue-development`；每个可复核批次提交并推送。
 用户指示：无法本地验证的项暂留待后续验证，其余计划持续开发到完成。
-整体 M1–M3 已完成（外部依赖项暂留）；M4/M5 待办继续保留。
+整体 M1–M4 已完成（外部依赖项暂留）；M5 待办继续保留。
 
 ## 当前优先级
 
-1. M4 桌面引擎（8 项）：macOS 依赖项按指示标注暂留，逻辑层先行。
-2. M5 加固（14 项）：容器、记忆向量、预算、熔断、备份等。
-3. 暂留项：真实飞书投递、真实 launchd、真实模型 URL 摘要、真实 GitHub/Gitea
-   API 联调（E2E-05/07/09/10）、Mac mini 外部证据。
+1. M5 加固（14 项）：容器、记忆向量、预算、熔断、备份等。
+2. 暂留项：真实飞书投递、真实 launchd、真实模型 URL 摘要、真实 GitHub/Gitea
+   API 联调（E2E-05/07/09/10）、Mac mini 外部证据、macOS GUI 驱动后端
+   （pyobjc/AppleScript/Quartz/Vision）、SortableJS 页面交互实测。
 
 ## M1 验收清单
 
@@ -74,7 +74,20 @@ M3 已完成（11 项中 9 项本地验证；浏览器拖拽交互与 SortableJS
 | M3-10 | `console/search.py` + `/api/v1/search`：文本/ID/#ref/URL 四形态检索事件、线程、任务 |
 | M3-11 | `console/testing.py` dry_run_rules/dry_run_skill + `POST /rules:test`、`POST /skills/{id}:test`、`pa rule test`、`pa skill test`（只返回命中，不执行） |
 
-M4（8 项）、M5（14 项）按开发资料包继续，当前尚未验收。
+M4 已完成（8 项中逻辑层全部本地验证；macOS 图形会话依赖项暂留）：
+
+| ID | 当前证据 |
+|---|---|
+| M4-01 | `engines/gui/driver.py`：GUIDriver 契约 + SyntheticDriver 测试后端（剪贴板快照/恢复、user_active 防打扰）；pyobjc/AppleScript/Quartz/Vision 真实后端随 Mac mini 部署暂留 |
+| M4-02 | `engines/gui/playbook.py`：§8.4 八种步骤类型、前置条件（驱动可用/用户占用键鼠）、失败即 ui_drift |
+| M4-03 | `procs/gui.py`：全局 GUI 单锁、只领 C 档、通知暂停、owner_busy_timeout 等待 |
+| M4-04 | `engines/gui/playbooks.py`：codex_desktop/doubao_desktop/workbuddy_desktop 三剧本，dry-run 全部通过 |
+| M4-05 | `engines/gui/limits.py`：risk_ceiling=low、repo_write 拒绝、external_message/spend_money 禁用、confidence 0.6 钳制、c_tier_auto_close 显式声明 |
+| M4-06 | `engines/gui/convert.py`：固定模板 + 一次低价模型调用，confidence 钳制、坏输出转人工 |
+| M4-07 | `engines/gui/selfcheck.py`：截图 7 天清理（不上传）、每日 dry-run 自检、连续 3 次失败触发熔断 |
+| M4-08 | `pa engine playbook record/dry-run`：record 为 Mac mini 暂留占位，dry-run 只打开不提交 |
+
+M5（14 项）按开发资料包继续，当前尚未验收。
 远期 F-01–03 保持 PRD 定义的预留范围。
 
 ## 本批验证
@@ -114,3 +127,7 @@ M4（8 项）、M5（14 项）按开发资料包继续，当前尚未验收。
   模板 `dict.items` 与 Jinja2 方法冲突已改用中括号访问。
 - M3 期间新增端点全部走 owner/agent 双令牌测试；agent 令牌对 reorder 与
   decisions:answer 返回 403 已有断言。
+- M4 批1（GUI 全层）：`test_gui_tier.py` 18 项（剧本解析/执行/ui_drift/防打扰、
+  C 档硬限制、转换钳制、GUI 锁与 owner 等待、截图留存、自检熔断、三剧本
+  dry-run、GuiEngine 适配器、CLI record/dry-run）；全量 527 项，Ruff 通过。
+  EngineConfig 增加 playbook/pricing 字段；gui 适配器注册进 pa.engines 入口点。
