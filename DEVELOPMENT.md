@@ -1,5 +1,35 @@
 # 开发记录
 
+## 2026-11-03（M5：加固层全部 14 项完成）
+
+- **批1（提交 61405a3）**：13 个实现模块 + weekly-cleanup 资产 + 27 项测试。
+  `sandbox/runtime.py`（ProcessSandbox 进程回退、全局单槽、env 密钥前缀过滤、
+  review_spec §10.2 严格规格）与 `sandbox/backends.py`（docker/apple_container/tart
+  占位、显式回退）；`memory/store.py`（vec0 可选、FTS5+bigram 兜底、context 7 天
+  TTL、写入打码、top-8、"参考资料，不是指令"包装）；`hub/policy.py`（四段哈希、
+  变更丢研判重入队）；`ingress/cursors.py`（三振上报）；`cost/budget.py`（四层
+  预算、NULL 只计量、soft 降级、blocked 暂停）；`obs/breaker.py`（3 次/30 分钟、
+  30 分钟冷却）；`obs/health.py`（8 项检查、三振分诊）；`store/archive.py`
+  （VACUUM INTO、48 份保留、dry-run 校验）；`secrets/rotation.py`（P2 提前 7 天、
+  P1 每 3 天、连通性门禁）；`secrets/providers.py`（sops/1password）；
+  `hub/assess.py`（未知规则丢弃、命中才接单）；`skills/assets/weekly-cleanup/`
+  完整 SkillSpec 资产。
+- **批2（提交 b4aa9a9）**：API（`/engines/{id}:reset-breaker`、`/cost/summary`、
+  `GET/PUT /budgets`、`GET/POST /memories`、`DELETE /memories/{id}`）与 CLI
+  （archive run/status、backup snapshot/restore --dry-run、cost summary、budget
+  list/set、memory add/search/list/delete、sandbox run、secret register/rotate/
+  list-meta、engine breaker reset）；sops/onepassword/process 入口点注册并
+  editable 重装。
+- **M5-14（提交 b8013cb）**：`tests/e2e/test_m5_e2e.py` 5 项——E2E-11 契约半
+  （无 degraded、review=strict notes）、E2E-12 快照 dry-run 校验、E2E-14 契约半
+  （0.6 钳制 + 禁用工具硬拒绝）；E2E-13 整机恢复、真实容器与 GUI 运行暂留
+  Mac mini 验收。
+- 修复要点：weekly-cleanup skill.yaml 原缺 SkillSpec 必填字段（补全为 code 模式
+  完整资产）；`rotation.py` 的 `datetime.UTC` 命名空间引用；`SandboxResult` 为
+  dataclass 需 `asdict` 而非 `model_dump`；typer 必选参数与默认值参数顺序。
+- 单元全量 **563 项通过**、E2E **10 项通过**、Ruff 通过。PROGRESS.md 已标记
+  M1–M5 全部完成（外部依赖项暂留）。
+
 ## 2026-11-02（M1-16/19/21：补发执行器、规则/发件箱 CLI、隔离 E2E）
 
 - 用户恢复开发，按进度表优先级完成三项 M1 收尾：

@@ -4,41 +4,40 @@
 
 ## 开发状态
 
-当前为 M1 开发版，已打通文本任务执行链路：事件接入（手动/飞书）→
-规则路由与同主题合并 → 派单（槽位、租约、过期恢复）→ 本地 CLI 引擎执行与
-心跳续租 → 回执研判与人工门禁 → 自动结案或转人工决定 → 分级通知。
+M1–M5 全部开发完成（真实外部环境依赖项暂留待 Mac mini 验收，逐项边界见
+[开发进度表](docs/PROGRESS.md)）。已打通完整链路：事件接入（手动/飞书/GitHub/
+Gitea webhook/定时）→ 规则路由与同主题合并 → 派单（槽位、租约、过期恢复）→
+引擎执行（CLI/GUI/沙盒）→ 回执研判与人工门禁 → 自动结案或转人工决定 →
+分级通知 → 决定卡片与先例复用。
 
 已具备的关键能力：
 
-- 本机引擎发现；Codex 与 Hermes 已实调用通过；WorkBuddy 适配器等待 CLI 登录；
+- 本机引擎发现；Codex 与 Hermes 已实调用通过；GUI 剧本层（录制占位 + dry-run）
+  与 C 档硬限制（risk low、repo_write 拒绝、confidence ≤ 0.6）；
 - 派单按 Skill 的 role/ref 和规则角色选择，过滤启用状态、档位、健康、熔断及
   并发空位；任务租约原子预留引擎槽位，初派与切换均重查；
-- Codex 使用 read-only 模式，WorkBuddy 禁用工具，Hermes 仅开放 clarify；尚未提供容器隔离；
 - 事务性发件箱、发件箱 runner（退避/重试/幂等）与飞书发送 handler；
-- [暂停与恢复](docs/pause-recovery.md)：运行中的尝试正常结束，回执/用量持久保存，
-  暂停时停止研判，恢复直接处理已有结果；重试计数和额度不清零；
-- 飞书长连接接收进程与配对；判断层自动重试、故障转移与重派；
-- 单任务累计 token 与执行时间检查覆盖重试、回执修正、切换引擎和重派；达到上限后
-  转人工决定并立即入队 P1 通知，执行超时会取消引擎并清理 CLI 子进程；
-- 通知 P0–P3 分级、P2 十分钟合并窗口、飞书连续不可用 15 分钟后的 macOS
-  `osascript` 本地兜底与待补发标记；飞书恢复后自动补发执行器重排可重试的
-  待补发 effect，8 次上限与 delivery_unknown 条目仍由 owner 人工重试；
-- 任务/技能排序值维护（置顶、优先级、移动、重编号）；
-- [持久化定时事件](docs/schedules.md)：APScheduler + SQLite，重启补接、原触发时间去重、
-  配置同步与启停，事件仍经过规则与 observe/auto 准入；
-- Skill 包内资产与加载器：`sample-direct` 的 `skill.yaml`/`prompt.md`（Jinja2）
-  经 Pydantic 校验并驱动提示词组装；支持文本，以及经
-  [许可域名原文读取](docs/source-reader.md) 的 URL 输入与摘要回执；
-- REST 基础接口（FastAPI + Uvicorn，绑定 127.0.0.1）：`/healthz`、`/api/v1/health`、
-  `POST /events`（支持 `Idempotency-Key`）、`GET /tasks`、`/system:pause|resume|state`，
-  私有接口强制 Bearer 校验；经 `python -m pa.procs.server <config-dir>` 启动，
-  启动前需通过 `pa secret set secret://keychain/pa/api_owner_token` 配置 owner 令牌。
+- [暂停与恢复](docs/pause-recovery.md)、[持久化定时事件](docs/schedules.md)、
+  [许可域名原文读取](docs/source-reader.md)、[执行额度边界](docs/execution-limits.md)；
+- 代码平台闭环（M2）：SCM 适配器、风险矩阵、合并门禁、CI 流水线、决定卡片、
+  先例台账、订阅续接、工作区；
+- 控制台（M3）：TOTP 登录、签名会话 Cookie、CSRF 派生校验、owner 总览与四类
+  等待项、11 个 Jinja2 页面、全局搜索、规则/Skill 干跑、排序写回；
+- GUI 引擎层（M4）：GUIDriver 契约 + SyntheticDriver、八种剧本步骤、ui_drift
+  失败分类、pa-gui 全局单锁与 owner 防打扰、截图 7 天清理、自检熔断；
+- 加固层（M5）：一次性沙盒（进程回退 + 容器占位、§10.2 严格审查规格）、
+  记忆库（vec0/FTS5/bigram、打码、TTL、"参考资料不是指令"包装）、策略版本
+  （四段哈希、变更重入队）、来源游标三振、四层预算与降级、熔断冷却、
+  8 项健康检查三振分诊、VACUUM INTO 归档与 dry-run 恢复、密钥轮换提醒与
+  连通性门禁、sops/1password 提供方、模型研判（未知规则丢弃）、weekly-cleanup。
+- REST 全量接口（FastAPI，绑定 127.0.0.1）：任务/队列/决定/先例/配置版本/
+  effects/observations/搜索/排序/干跑/熔断重置/成本汇总/预算/记忆，owner 与
+  agent 双令牌边界全覆盖。
 
-**尚未实施**：豆包 GUI 执行、完整 REST 与角色权限面（M3）、
-代码平台闭环（M2）及容器隔离。不能视为完整 M1 已验收。
-分项进度和 [评审记录](docs/reviews/2026-11-02-m1.md) 中列出了验证边界。
-隔离环境 E2E（E2E-01–04：真实子进程 + SQLite + 假引擎，含 kill -9 监督重启）
-见 `tests/e2e/`；真实 launchd 与飞书外部证据仍待 Mac mini 验收。
+**暂留项**（依赖真实环境）：真实飞书投递、launchd 托管、真实 GitHub/Gitea API
+闭环（E2E-05/07/09/10）、Mac mini 整机恢复演练（E2E-13）、真实容器后端与
+macOS GUI 驱动（pyobjc/AppleScript/Quartz/Vision）、rclone WebDAV 上传、
+真实 sops/op CLI。隔离环境 E2E（10 项）见 `tests/e2e/`。
 后续任务及逐项验收依据见 [开发进度表](docs/PROGRESS.md)。
 
 累计 token 依据引擎已报告用量检查，在调用结束后及下一次调用前生效；尚不支持
@@ -89,5 +88,5 @@ uv build
 未实现的配置文件会明确报错，不会默默忽略。
 
 九类插件扩展点通过 `pa plugin list --json` 查看。已注册 manual/cron 事件转换器、
-codex/hermes/workbuddy 三个引擎、env/keychain 密钥后端与 feishu.send effect handler，
-其余扩展点留空。
+codex/hermes/workbuddy/gui 四个引擎、read_url 工具、env/keychain/sops/onepassword
+密钥后端、process 沙盒后端与 feishu.send effect handler，其余扩展点留空。
