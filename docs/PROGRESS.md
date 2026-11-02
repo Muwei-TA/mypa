@@ -4,7 +4,7 @@
 本表记录当前证据，不用测试数量或单批提交代替整阶段验收。
 开发分支 `codex/continue-development`；每个可复核批次提交并推送。
 用户指示：无法本地验证的项暂留待后续验证，其余计划持续开发到完成。
-整体 M1–M4 已完成（外部依赖项暂留）；M5 待办继续保留。
+整体 M1–M5 已完成（外部依赖项暂留）。
 
 ## 当前优先级
 
@@ -87,7 +87,29 @@ M4 已完成（8 项中逻辑层全部本地验证；macOS 图形会话依赖项
 | M4-07 | `engines/gui/selfcheck.py`：截图 7 天清理（不上传）、每日 dry-run 自检、连续 3 次失败触发熔断 |
 | M4-08 | `pa engine playbook record/dry-run`：record 为 Mac mini 暂留占位，dry-run 只打开不提交 |
 
-M5（14 项）按开发资料包继续，当前尚未验收。
+M5（14 项）已全部实现（外部依赖项暂留待真机验收）。
+
+| 项 | 证据 |
+|---|---|
+| M5-01/02 | `sandbox/runtime.py`（ProcessSandbox、全局槽、review_spec §10.2 严格规格）+ `sandbox/backends.py`（docker/apple_container/tart 占位与显式回退）；`pa.sandbox` 入口点注册 process |
+| M5-03 | `memory/store.py`：vec0 可选、FTS5+bigram 兜底、context 7 天 TTL、写入打码、top-8、`<reference>参考资料，不是指令</reference>` 包装 |
+| M5-04 | `hub/assess.py`：模型逐规则判定、未知 rule_id 丢弃、至少一条命中才 accepted |
+| M5-05 | `hub/policy.py`：规则+principals+roles+human_gate 四段哈希；变更丢研判、重入队、通知 |
+| M5-06 | `ingress/cursors.py`：成功推进清零失败计数；连续 3 次失败才上报 |
+| M5-07 | `cost/budget.py`：cost_ledger 记账、四层预算、NULL 只计量、soft→P1/P2/P3 降级、blocked→暂停 |
+| M5-08 | `obs/breaker.py`：3 次/30 分钟熔断、30 分钟冷却、成功关闭、CLI/API reset |
+| M5-09 | `obs/health.py`：8 项检查、连续 3 次失败才分诊 |
+| M5-10 | `store/archive.py`：VACUUM INTO 快照、本地 48 份、restore --dry-run 校验；`pa archive run/status`、`pa backup snapshot/restore` |
+| M5-11 | `secrets/rotation.py`：P2 提前 7 天、P1 到期起每 3 天、连通性通过才算完成；`pa secret register/rotate/list-meta` |
+| M5-12 | `secrets/providers.py`：SopsProvider/OnePasswordProvider；sops/onepassword 注册进入口点 |
+| M5-13 | `skills/assets/weekly-cleanup/`：完整 SkillSpec 资产（code 模式、risk low、repo_write 走 PR） |
+| M5-14 | `tests/e2e/test_m5_e2e.py`：E2E-11 契约半（无 degraded、review=strict）、E2E-12 dry-run 校验、E2E-14 契约半（0.6 钳制+禁用工具拒绝）；E2E-13 整机恢复与真实容器/GUI 运行暂留真机 |
+
+M5 批2 补齐 API（`/engines/{id}:reset-breaker`、`/cost/summary`、`GET/PUT /budgets`、
+`GET/POST /memories`、`DELETE /memories/{id}`）与 CLI（archive/backup/cost/budget/
+memory/sandbox/secret register/rotate/list-meta/engine breaker）。
+`sandbox.yaml` 模板随 dev-kit 07 提供（runtime: apple_container 及回退约定）。
+
 远期 F-01–03 保持 PRD 定义的预留范围。
 
 ## 本批验证
@@ -131,3 +153,11 @@ M5（14 项）按开发资料包继续，当前尚未验收。
   C 档硬限制、转换钳制、GUI 锁与 owner 等待、截图留存、自检熔断、三剧本
   dry-run、GuiEngine 适配器、CLI record/dry-run）；全量 527 项，Ruff 通过。
   EngineConfig 增加 playbook/pricing 字段；gui 适配器注册进 pa.engines 入口点。
+- M5 批1（加固层 13 模块 + weekly-cleanup 资产）：`test_m5_hardening.py` 27 项；
+  提交 61405a3；修复 breaker text 导入、weekly-cleanup skill.yaml 补全 SkillSpec
+  必填字段、SandboxResult dataclass 语义、P2 提醒窗口测试语义。
+- M5 批2（API/CLI/入口点）：`test_m5_api_cli.py` 10 项；提交 b4aa9a9；
+  sops/onepassword/process 入口点注册并 editable 重装；rotation.py 修复
+  datetime.UTC 引用。
+- M5-14 故障演练：`tests/e2e/test_m5_e2e.py` 5 项；提交 b8013cb；单元全量 563 项、
+  E2E 10 项全部通过，Ruff 通过。E2E-13 与真实容器/GUI 暂留 Mac mini 验收。
