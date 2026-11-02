@@ -1,0 +1,36 @@
+[
+  {
+    "_comment": "示例数据（PRD §5.1 Event）：owner 在沙盒仓库的 Issue 上打了 pa:fix 标签。用于 I-HUB / E2E-05 的测试夹具",
+    "id": "01JC8Z0000000000000000EVT1",
+    "source": "github",
+    "type": "github.issues.labeled",
+    "category": "manual",
+    "actor": "github:<owner>",
+    "subject": "owner/sandbox#12",
+    "payload": {"label": "pa:fix", "repo": "owner/sandbox", "number": 12},
+    "dedup_key": "<X-GitHub-Delivery>",
+    "received_at": "2026-11-02T08:00:00Z",
+    "trust": "verified",
+    "summary": "沙盒仓库 #12：修复 README 链接失效",
+    "link": "https://github.com/owner/sandbox/issues/12",
+    "threads": ["github:owner/sandbox#12"],
+    "addressed": true
+  },
+  {
+    "_comment": "示例数据：告警事件，交给 observe 模式的规则 r-alert-triage 处理（E2E-04）",
+    "id": "01JC8Z0000000000000000EVT2",
+    "source": "manual",
+    "type": "alert.test",
+    "category": "alert",
+    "actor": null,
+    "subject": "svc-x",
+    "payload": {"level": "error", "msg": "5xx 比例升高"},
+    "dedup_key": "alert-svc-x-202611020800",
+    "received_at": "2026-11-02T08:00:00Z",
+    "trust": "verified",
+    "summary": "svc-x 5xx 比例升高",
+    "link": null,
+    "threads": [],
+    "addressed": false
+  }
+]

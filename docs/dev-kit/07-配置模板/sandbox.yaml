@@ -1,0 +1,6 @@
+# ~/.config/pa/sandbox.yaml（PRD v1.1 §19.1、§9.1.1，v1.1·K5 / K4）
+runtime: apple_container        # apple_container | tart | docker
+images: {python: pa-py312, node: pa-node22}      # 镜像定义见 deploy/macos/containers/*.Containerfile
+defaults: {cpus: 2, memory_gb: 4, timeout_min: 15, network: none}
+install_network_allow: [pypi.org, files.pythonhosted.org, registry.npmjs.org]
+review: {network: none, secrets: none, mount: readonly}   # 红线 R-08，不可放宽

@@ -1,0 +1,45 @@
+# skills/sample-code/skill.yaml（PRD v1.1 §7.2、§7.4）
+# 用途：在沙盒仓库里按 Issue 改代码并开 PR，验证 CI、退回修改、合并权限判断和决定卡片
+id: sample-code
+name: 改代码型示例
+version: 1
+enabled: true
+rank: 2000
+priority: P2
+concurrency: 1
+timeout_min: 20
+mode: code
+engines:
+  - role: dev                   # C 档引擎不能改代码，这里不要列 C 档（红线 R-11）
+allowed_tiers: [A, B]
+prepare: "uv sync --frozen"     # 首次执行前在工作区运行一次，限时 10 分钟；按目标仓库的实际情况修改
+blocked_commands: [git push --force, rm -rf /]
+sandbox: {tests: container}     # 测试和构建放进一次性容器（M2 阶段的降级方案见 01）
+tools: [repo_read, memory_search]
+permissions:
+  network: allowlist
+  network_allow: ["*.github.com"]
+  fs: workspace_only
+  repo_write: true
+risk_ceiling: medium
+human_gate:
+  confidence_below: 0.7
+  always_on: [delete_data, stop_service, spend_money, external_message,
+              product_direction, secret_change, permission_change]
+  use_precedents: true
+delivery:
+  ui_change_requires_screenshots: true
+  draft_must_be_marked: true
+communication:
+  ack: once
+  max_chat_words: 100
+budget:
+  per_task_tokens: 200000
+  per_task_turns: 30
+  daily_cny: null
+steps: [read_source, verify, decide_code_change, act]
+sections: {}
+output_schema: default
+memory:
+  read: [skill:sample-code, global, precedents]
+  write: lessons

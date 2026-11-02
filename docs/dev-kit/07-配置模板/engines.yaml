@@ -1,0 +1,36 @@
+# ~/.config/pa/engines.yaml（PRD v1.1 §8.5，v1.1·K3）
+engines:
+  codex_cli:
+    adapter: codex_cli
+    bin: /opt/homebrew/bin/codex
+    model: <待填>
+    max_concurrency: 2
+    auth: secret://keychain/pa/openai_api_key      # 也可以使用命令行自身的登录态
+    pricing: {mode: token, ref: pricing.openai}
+  claude_code:
+    enabled: false
+    adapter: claude_code
+    bin: /opt/homebrew/bin/claude
+  openai_compat.doubao:
+    adapter: openai_compat
+    base_url: <待填，如方舟接口地址>
+    model: <待填>
+    api_key: secret://keychain/pa/ark_api_key
+    pricing: {mode: token, ref: pricing.doubao}
+  codex_desktop:
+    adapter: gui
+    playbook: playbooks/codex_desktop.yaml
+    pricing: {mode: per_call, cny: 0}               # 订阅制，按次数和时长计量
+  doubao_desktop:
+    adapter: gui
+    playbook: playbooks/doubao_desktop.yaml
+  workbuddy_desktop:
+    adapter: gui
+    playbook: playbooks/workbuddy_desktop.yaml
+circuit_breaker: {fail_threshold: 3, window_min: 30, cooldown_min: 30}
+roles:                          # Skill 和规则按角色引用引擎；换模型只改这里
+  dev:     [codex_cli, claude_code, openai_compat.doubao]
+  ops:     [codex_cli, openai_compat.doubao]
+  review:  [claude_code, codex_cli]                           # 必须与本次写代码所用的引擎或模型不同
+  browser: [codex_cli, doubao_desktop, workbuddy_desktop]
+  router:  [openai_compat.doubao]

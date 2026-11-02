@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd 模板（依据 PRD v1.1 §3.3、§16.3、§18.2）。
+     由 `pa service install` 渲染以下变量：{{PROC}} 取值 server|core|worker|gui|sandbox|archive，{{PA_HOME}}，{{USER_HOME}}。
+     archive 进程用 StartInterval=3600（每小时快照一次，§13.3），并去掉 KeepAlive；其余进程都设 KeepAlive=true。
+     gui 进程必须运行在已登录的图形会话中，因此只能作为 LaunchAgent 加载，不能做成 LaunchDaemon（§8.4）。 -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pa.{{PROC}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PA_HOME}}/.venv/bin/pa</string>
+    <string>proc</string>
+    <string>{{PROC}}</string>
+  </array>
+  <key>WorkingDirectory</key><string>{{PA_HOME}}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>StandardOutPath</key><string>{{USER_HOME}}/pa-data/logs/app/{{PROC}}.out.log</string>
+  <key>StandardErrorPath</key><string>{{USER_HOME}}/pa-data/logs/app/{{PROC}}.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PA_CONFIG_DIR</key><string>{{USER_HOME}}/.config/pa</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

@@ -1,0 +1,25 @@
+# ~/.config/pa/sources.yaml（PRD v1.1 §19.2）
+sources:
+  github:
+    enabled: true
+    webhook_secret: secret://keychain/pa/github_webhook_secret
+    app_id: <待填>
+    private_key: secret://keychain/pa/github_app_private_key
+    # merger 身份（v1.1·D17）。PRD 没有给出字段名，以下为按命名风格补的建议，见 README 歧义清单 A4
+    # merger_app_id: <待填>
+    # merger_private_key: secret://keychain/pa/github_merger_private_key
+  gitea:
+    enabled: true
+    base_url: http://<gitea_lan_host>:<port>
+    token: secret://keychain/pa/gitea_bot_token
+    webhook_secret: secret://keychain/pa/gitea_webhook_secret
+    allow_ips: [<gitea_lan_ip>/32]
+    # merger_token: secret://keychain/pa/gitea_merger_token   # 建议字段，同上
+  feishu:
+    enabled: true
+    mode: long_connection        # long_connection | http_callback
+    app_id: <待填>
+    app_secret: secret://keychain/pa/feishu_app_secret
+    encrypt_key: secret://keychain/pa/feishu_encrypt_key
+    verification_token: secret://keychain/pa/feishu_verify_token
+  # alert / error / feedback / new_source：预留，暂不启用（§5.3）

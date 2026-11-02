@@ -1,0 +1,16 @@
+# ~/.config/pa/risk.yaml（PRD v1.1 §10.3，默认的硬规则，可以按需调整）
+# final_risk = max(hard_rule_risk, ai_risk)；AI 不能把风险调低（红线 R-03）
+# 以下字段结构是为了落地 §10.3 的表格而补的 [实现约定]；阈值和路径都取自 PRD
+low:
+  only_paths: ["docs/**", "**/*.md", "tests/**"]   # 外加文案类配置
+  max_lines: 49                                     # 改动 < 50 行
+medium:
+  max_lines: 199                                    # 改动业务代码 < 200 行（v1.1·D17：由 300 下调为 200）
+high_if_any:
+  dependency_manifests: ["requirements*", "pyproject.toml", "package*.json", "go.mod"]
+  ci_paths: [".github/**", ".gitea/**"]
+  db_migrations: true
+  sensitive_paths: ["**/auth/**", "**/secret*"]
+  deletes_files: true
+  min_lines: 200
+  receipt_tags_any: [delete_data, stop_service, spend_money, external_message, product_direction, secret_change, permission_change]

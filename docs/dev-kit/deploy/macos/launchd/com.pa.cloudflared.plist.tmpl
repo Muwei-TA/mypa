@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- cloudflared 的 launchd 模板（§18.2 中的 com.pa.cloudflared）。 -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pa.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>--config</string>
+    <string>{{USER_HOME}}/.cloudflared/config.yml</string>
+    <string>run</string>
+    <string>pa</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>{{USER_HOME}}/pa-data/logs/app/cloudflared.out.log</string>
+  <key>StandardErrorPath</key><string>{{USER_HOME}}/pa-data/logs/app/cloudflared.err.log</string>
+</dict>
+</plist>

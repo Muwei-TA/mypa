@@ -1,0 +1,47 @@
+# 其他配置模板（PRD v1.1 §19.4、§15、§16.1）
+# 编程智能体在实现时，把每一段拆成单独的文件：~/.config/pa/<文件名>
+
+# ---- schedules.yaml ----
+# 格式：[{id, cron, event_type, payload}]
+schedules: []
+#  - id: daily-digest
+#    cron: "<待填>"              # 汇总发送时间暂缓确定（§24 第 10 项）
+#    event_type: cron.digest
+#    payload: {}
+
+# ---- principals.yaml ----
+owner: {github: <待填>, gitea: <待填>, feishu_open_id: <待填>}
+
+# ---- notify.yaml ----
+target: {type: user, id: <待填>}          # 取值 user | chat
+quiet_hours: null                         # 免打扰时段，暂缓确定
+digest_at: null                           # 每日汇总发送时间，暂缓确定
+merge_window_s: 600
+fallback_local: true
+
+# ---- storage.yaml ----
+webdav: {rclone_remote: pa-webdav, path: <待填>, retention_days: null}
+snapshots: {hourly: true, keep_local: 48}
+logs: {local_days: 90, upload: daily, redact_before_upload: true}
+gui_screenshots: {local_days: 7, upload: false}
+
+# ---- secrets.yaml ----
+default_provider: keychain                # keychain | env | sops | onepassword
+rotate_every_days: 90
+remind_before_days: 7
+
+# ---- budgets.yaml（§15，金额暂不设定；limit_cny 为 null 时只记账、不拦截）----
+budgets:
+  - {scope: global, period: day,   limit_cny: null, soft_pct: 80, hard_action: pause_queue}
+  - {scope: global, period: month, limit_cny: null, soft_pct: 80, hard_action: pause_queue}
+
+# ---- pricing.yaml（§15，单价待填；计量方式为 token | per_call | duration）----
+pricing:
+  openai: {mode: token, input_per_mtok_cny: <待填>, output_per_mtok_cny: <待填>}
+  doubao: {mode: token, input_per_mtok_cny: <待填>, output_per_mtok_cny: <待填>}
+# 以上单价字段名是为了表达"按 token 计价"补的 [实现约定]；PRD 只规定了计量方式
+
+# ---- redaction.yaml（§16.1，在内置规则之外追加的规则）----
+extra_patterns: []
+mask_phone: false                         # 可选：屏蔽手机号
+mask_email: false                         # 可选：屏蔽邮箱

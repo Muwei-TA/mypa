@@ -1,0 +1,14 @@
+# ~/.cloudflared/config.yml（依据 PRD v1.1 §22.4、§17.5）
+# 只暴露 /hooks/github、/hooks/feishu（作为长连接的备用）和 /healthz，其余路径一律返回 404。
+# /hooks/gitea 走局域网直连，不经过 Tunnel。
+tunnel: pa
+credentials-file: <~/.cloudflared/<tunnel-id>.json>
+
+ingress:
+  - hostname: <pa.example.com>
+    path: ^/(hooks/github|hooks/feishu|healthz)$
+    service: http://127.0.0.1:8787
+  # 可选：控制台对外访问。必须在 Cloudflare 后台为该主机名开启 Cloudflare Access（§17.5）
+  # - hostname: <console.pa.example.com>
+  #   service: http://127.0.0.1:8787
+  - service: http_status:404

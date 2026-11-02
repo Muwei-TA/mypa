@@ -1,0 +1,15 @@
+# playbooks/doubao_desktop.yaml（PRD v1.1 §8.4 示例）
+# codex_desktop 和 workbuddy_desktop 结构相同，按各自软件的实际界面填写 app 和各个步骤
+app: "豆包"                     # 软件名或 bundle id
+version_hint: ">=1.0"
+steps:
+  - activate_app: {}
+  - new_session: {hotkey: "cmd+n"}
+  - wait_for: {ax_role: "AXTextArea", timeout_s: 10}
+  - paste_text: {from: "prompt"}           # 通过剪贴板输入，结束后恢复原剪贴板
+  - press: {key: "return"}
+  - wait_until_idle: {indicator: {ax_title_absent: "停止生成"}, timeout_s: 600}
+  - copy_last_reply: {strategy: "ax_value | hotkey:cmd+shift+c | screenshot_ocr"}
+  - screenshot: {save_as: "final"}
+result:
+  extractor: text               # 提取到的文本交给结构化转换器（转换后 confidence ≤ 0.6）

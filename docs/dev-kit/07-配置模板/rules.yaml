@@ -1,0 +1,37 @@
+# ~/.config/pa/rules.yaml（PRD v1.1 §6.3、§19.3）
+# 字段说明：
+#   id, rank（越小越先匹配）, enabled, match, require, skill, priority(P0-P3)
+#   accept_mode: off | observe | auto      主动类规则默认 observe（v1.1·D4）；明确请求在任何模式下都执行
+#   assess: bool                           可选的模型研判（v1.1·D5）
+#   engine_role / skill_section / target_dir|repo / concurrency_key / max_parallel / notify(decision_only|result|never)（v1.1·K2）
+#   merge_by: subject | dedup_window_s | continue
+rules:
+  - id: r-issue-sandbox
+    rank: 1000
+    match: {source: [github, gitea], type: "*.issues.labeled", label: "pa:fix", repo_class: sandbox}
+    require: {actor_in: [owner]}           # owner 打标签视为明确请求，任何 accept_mode 下都执行
+    skill: sample-code
+    engine_role: dev                       # v1.1·K3
+    priority: P2
+    merge_by: subject
+    concurrency_key: subject               # v1.1·K2：同一个 Issue 同时只跑一轮
+    max_parallel: 3
+    notify: decision_only
+  - id: r-manual-direct
+    rank: 2000
+    match: {source: manual, skill: sample-direct}
+    skill: sample-direct
+    priority: P2
+  - id: r-feedback-collect                 # v1.1·K12：反馈只收集，由你手动转给 Agent
+    rank: 3000
+    match: {category: feedback}
+    skill: sample-direct
+    accept_mode: off
+  - id: r-alert-triage                     # v1.1·D4 / D5：主动类规则示例，先观察并开启研判
+    rank: 4000
+    match: {category: [alert, error]}
+    skill: <待定义>
+    engine_role: ops
+    accept_mode: observe
+    assess: true
+    concurrency_key: subject

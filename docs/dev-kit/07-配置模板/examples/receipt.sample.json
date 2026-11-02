@@ -1,0 +1,17 @@
+{
+  "_comment": "示例回执（PRD §7.3），需要人决定的情况；可用 receipt.schema.json 校验（校验前先去掉 _comment 字段）",
+  "status": "needs_human",
+  "summary": "已修复 README 中 3 处失效链接，PR #34 待合并",
+  "artifacts": [{"type": "pr", "ref": "https://github.com/owner/sandbox/pull/34"}],
+  "code_changed": true,
+  "draft": false,
+  "confidence": 0.82,
+  "risk": "low",
+  "risk_reasons": ["只改动 docs/README.md，共 6 行"],
+  "tags": [],
+  "suggested_action": "merge",
+  "human_action": {"question": "是否合并 PR #34？", "options": ["approve", "reject"], "recommend": "approve", "why": "只改文档，CI 和审查都已通过"},
+  "handback": [],
+  "evidence": ["CI #881 通过", "pa/ai-review: success（0 个 blocker）"],
+  "usage": {"input_tokens": 51234, "output_tokens": 8120, "duration_s": 312}
+}

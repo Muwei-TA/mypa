@@ -1,0 +1,27 @@
+# ~/.config/pa/pa.yaml：主配置（PRD v1.1 §19.1）
+# 说明：PRD 中没有单独的 worker.yaml，worker 相关参数都在本文件的 worker 段里。
+instance: mac-mini-home
+timezone: Asia/Shanghai
+data_dir: ~/pa-data
+server:
+  bind: 0.0.0.0:8787            # 局域网访问；控制台另有登录
+  public_paths: [/hooks/github, /hooks/feishu, /healthz]   # 只有这些路径允许经 Tunnel 访问（§17.5）
+worker: {slots: 3, reserved_owner_slots: 1, gui_slots: 1, sandbox_slots: 1}   # v1.1·D9 / K5
+limits:
+  max_retry: 2
+  max_fix_rounds: 3
+  max_review_rounds: 3          # v1.1·K4：与 max_fix_rounds 共用计数
+  transient_retries: 3          # 临时错误自动重试次数，不计入重派
+  decision_timeout_h: 24
+  default_task_timeout_min: 20
+  prepare_timeout_min: 10       # v1.1·D13
+dedup: {default_window_s: 600}
+subscriptions: {retain_days_after_end: 14}       # v1.1·D7
+human_gate:
+  confidence_below: 0.7
+  precedent_min_similarity: 0.85                 # v1.1·K9
+  never_auto_by_precedent: [delete_data, spend_money, secret_change, permission_change]   # 红线 R-02，不可删除
+defaults:
+  accept_mode_proactive: observe                 # v1.1·D4
+  notify: decision_only                          # v1.1·K2
+console: {enabled: true, auth: {password_hash: secret://keychain/pa/console_pw_hash, totp: secret://keychain/pa/console_totp}}

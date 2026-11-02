@@ -1,0 +1,43 @@
+# skills/sample-direct/skill.yaml（PRD v1.1 §7.2）
+id: sample-direct
+name: 直接处理型示例
+version: 1
+enabled: true
+rank: 1000
+priority: P2
+concurrency: 1
+timeout_min: 20
+mode: direct                    # auto | direct | code。PRD 示例中写的是 auto；本 Skill 只验证"直接处理"链路，所以用 direct
+engines:
+  - role: dev
+  - ref: workbuddy_desktop      # C 档：只有 risk_ceiling 为 low 时才允许使用
+allowed_tiers: [A, B, C]
+blocked_commands: [git push --force, rm -rf /]   # 只是默认约束，不是安全边界
+tools: [read_url, memory_search, feishu_notify]
+permissions:
+  network: allowlist
+  network_allow: ["*.github.com"]
+  fs: workspace_only
+  repo_write: false
+risk_ceiling: low
+human_gate:
+  confidence_below: 0.7
+  always_on: [delete_data, stop_service, spend_money, external_message,
+              product_direction, secret_change, permission_change]
+  use_precedents: true
+delivery:
+  ui_change_requires_screenshots: true
+  draft_must_be_marked: true
+communication:
+  ack: once
+  max_chat_words: 100
+budget:
+  per_task_tokens: 200000
+  per_task_turns: 30
+  daily_cny: null
+steps: [read_source, verify, decide_code_change, act]
+sections: {}
+output_schema: default
+memory:
+  read: [skill:sample-direct, global, precedents]
+  write: lessons

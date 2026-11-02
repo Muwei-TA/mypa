@@ -1,0 +1,10 @@
+# ~/.config/pa/merge_policy.yaml（PRD v1.1 §10.4）
+repo_classes:
+  sandbox:  {repos: ["<待填>"]}
+  personal: {repos: ["<待填>"]}
+  prod:     {repos: ["<待填>"]}
+matrix:
+  sandbox:  {low: auto_release,         medium: auto_merge_notify,     high: confirm}
+  personal: {low: auto_merge_notify,    medium: confirm,               high: confirm_merge_and_release}
+  prod:     {low: confirm,              medium: confirm,               high: confirm_no_auto_release}
+default_class: personal                  # 没有登记的仓库按 personal 处理
