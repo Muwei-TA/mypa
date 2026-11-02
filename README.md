@@ -17,9 +17,12 @@
   `osascript` 本地兜底与待补发标记；
 - 任务/技能排序值维护（置顶、优先级、移动、重编号）；
 - Skill 包内资产与加载器：`sample-direct` 的 `skill.yaml`/`prompt.md`（Jinja2）
-  经 Pydantic 校验并驱动提示词组装，完成读取 → 核实 → 摘要 → 结案。
+  经 Pydantic 校验并驱动提示词组装，完成读取 → 核实 → 摘要 → 结案；
+- REST 基础接口（FastAPI + Uvicorn，绑定 127.0.0.1）：`/healthz`、`/api/v1/health`、
+  `POST /events`（支持 `Idempotency-Key`）、`GET /tasks`、`/system:pause|resume|state`，
+  可选 Bearer 校验；经 `python -m pa.procs.server <config-dir>` 启动。
 
-**尚未实施**：REST 接口（M1-18）、M2 及以后能力、HTTP 服务与 launchd 托管、
+**尚未实施**：完整 REST 资源面（M3-02）、M2 及以后能力、launchd 托管、
 真实外部平台部署。分项进度、验收范围和待决事项见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
 ## 本地开发

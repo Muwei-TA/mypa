@@ -42,6 +42,20 @@
   secret 拦截与 recovery 前缀。
 - 验收：文本/URL 输入经 worker 完成读取 → 核实 → 摘要回执 → `closed` 结案。
 
+## 2026-11-02（第四批：M1-18 进程入口与 REST 基础接口）
+
+引入 PRD §21 指定的 **FastAPI + Uvicorn**，新增本地 HTTP 入口：
+
+- 新增 `api/app.py`：`create_app(facade, api_token=None)`，实现 `/healthz`（公开）、
+  `/api/v1/health`（db 检查）、`POST /api/v1/events`（`Idempotency-Key` 映射为
+  manual 事件 dedup_key，经 ManualAdapter + emit）、`GET /api/v1/tasks`
+  （status/skill 过滤）、`POST /system:pause|resume` 与 `GET /system/state`。
+- 鉴权：默认本地 loopback 单用户放行；提供 `api_token` 时启用 Bearer 校验，
+  healthz 保持公开；PAError 统一映射为 4xx JSON 响应。
+- 新增 `procs/server.py`：uvicorn 启动入口，绑定 127.0.0.1；已用真实 uvicorn
+  启动 + httpx 请求完成冒烟。
+- 边界：完整 REST 资源面、Cookie 会话与角色 facade 隔离属于 M3，本批只做基础端点。
+
 ## 首批实现范围
 
 | 任务 | 状态 | 本次结果与边界 |
@@ -60,8 +74,9 @@
 | M1-15 | 完成 | transient 同引擎重试、auth/quota/invalid_output 故障转移、重派与 engine_hint、重试上限升级 |
 | M1-16 | 完成 | P0–P3 分级、P2 合并窗口、飞书失败 15 分钟 osascript 兜底与 backfill、decision_only 不发卡 |
 | M1-17 | 完成 | sample-direct 包内资产、Skill 加载器与 Jinja2 渲染、资产驱动提示词、端到端读取核实摘要结案 |
+| M1-18 | 完成 | FastAPI 基础端点、Idempotency-Key、Bearer 校验、procs/server 入口与真实 uvicorn 冒烟 |
 | M1-19 | 部分 | init/migrate/doctor/config/event/task 查询取消/pause/resume/status/observe/effect/plugin，及 move/pin/priority、skill reorder |
-| M1-18 / M2–M5 | 未实现 | REST 接口、真实模型研判、PR、GUI、容器与恢复演练未验收 |
+| M2–M5 | 未实现 | 真实模型研判、PR、GUI、容器与恢复演练未验收 |
 
 ## 实测验证
 
@@ -84,6 +99,8 @@
   15 分钟本地兜底与 backfill、decision_only 不发结案卡。
 - 第三批后 `pytest` 增至 **212 个用例通过**：新增 Skill 加载器 8 个（含模型校验、
   prompt 渲染、文本/URL 端到端结案）；已核对 wheel 内含 `skills/assets` 资产。
+- 第四批后 `pytest` 增至 **219 个用例通过**：新增 API 测试 7 个（healthz/health、
+  事件建任务、幂等、任务过滤、pause/resume、Bearer 401/200）。
 
 ## 实现约定与待办
 
