@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pa-automation"
+version = "0.1.0"
+description = "Private AI automation system — M1 foundation"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.14,<2",
+  "pydantic>=2.10,<3",
+  "PyYAML>=6.0.2,<7",
+  "SQLAlchemy>=2.0.36,<2.1",
+  "structlog>=24.4,<27",
+  "typer>=0.15,<1",
+]
+
+[project.scripts]
+pa = "pa.cli.main:app"
+
+[project.entry-points."pa.ingress"]
+manual = "pa.ingress.manual:ManualAdapter"
+cron = "pa.ingress.cron:CronAdapter"
+[project.entry-points."pa.engines"]
+[project.entry-points."pa.tools"]
+[project.entry-points."pa.scm"]
+[project.entry-points."pa.notifiers"]
+[project.entry-points."pa.secrets"]
+env = "pa.secrets.resolver:EnvProvider"
+[project.entry-points."pa.hooks"]
+[project.entry-points."pa.sandbox"]
+[project.entry-points."pa.effects"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3,<10",
+    "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pa"]
+
+[tool.hatch.build.targets.wheel.force-include]
+alembic = "pa/migrations"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
