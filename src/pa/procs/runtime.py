@@ -9,6 +9,7 @@ from pa.common import PAError, new_id, now
 from pa.config.loader import load
 from pa.effects.runner import EffectRunner
 from pa.engines.process import ENV_ALLOW
+from pa.notify.dispatch import flush_due
 from pa.plugins import discover
 from pa.procs.worker import Worker
 from pa.store.db import transaction
@@ -88,6 +89,8 @@ async def serve(config_dir, *, once=False, engine_id=None):
                 handlers["feishu.send"] = discover("pa.effects")["feishu.send"].load()(
                     cfg, facade.engine
                 )
+            with transaction(facade.engine) as c:
+                flush_due(c, config=cfg)
             delivery = await EffectRunner(facade.engine, handlers).once()
             if once:
                 return {"task": task_result, "effect": delivery}

@@ -25,7 +25,8 @@ class FeishuClient:
     @property
     def domain(self):
         return {"feishu": "https://open.feishu.cn", "lark": "https://open.larksuite.com"}[
-            self.config.sources.sources.feishu.brand]
+            self.config.sources.sources.feishu.brand
+        ]
 
     async def request(self, method, path, *, body=None, params=None, authenticated=True):
         headers = {}

@@ -8,11 +8,11 @@ from sqlalchemy import text
 from pa.common import PAError, new_id, now
 from pa.config.loader import load
 from pa.config.schema import SEVEN_TAGS
-from pa.effects.store import enqueue
-from pa.engines.base import EngineRequest
+from pa.engines.base import EngineRequest, EngineResult
 from pa.engines.registry import get_engine
 from pa.hub.dispatcher import claim, recover_expired
-from pa.notify.feishu import target_payload
+from pa.notify.dispatch import request_notification
+from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
 from pa.skills.prompt_assembly import assemble
 from pa.store.db import transaction
@@ -21,41 +21,101 @@ from pa.store.transitions import transition
 
 
 class Worker:
-    def __init__(self, facade, config_dir, *, engines=None):
-        self.facade, self.config_dir, self.injected = facade, config_dir, engines or {}
+    def __init__(self, facade, config_dir, *, engines=None, sleeper=None):
+        self.facade = facade
+        self.config_dir = config_dir
+        self.injected = engines or {}
+        # Injected in tests so transient backoff does not slow the suite.
+        self.sleeper = sleeper or asyncio.sleep
 
     async def once(self, engine_id=None):
         config = load(self.config_dir)
         recover_expired(self.facade.engine)
-        choices = [engine_id] if engine_id else config.engines.roles.get("dev", [])
-        chosen = None
+        hint = self._queue_hint()
+        chosen, chosen_id = await self._select_engine(config, engine_id, hint)
+        task = claim(self.facade.engine, config, chosen_id)
+        if task is None:
+            return None
+        return await self._drive(task, chosen, chosen_id, config)
+
+    def _queue_hint(self):
+        with self.facade.engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT engine_hint FROM tasks WHERE status='queued' "
+                    "ORDER BY enqueued_at LIMIT 1"
+                )
+            ).scalar_one_or_none()
+
+    async def _select_engine(self, config, preferred=None, exclude=None):
+        choices = [preferred] if preferred else list(config.engines.roles.get("dev", []))
+        # A re-dispatch prefers an engine different from the last one used.
+        if not preferred and exclude and exclude in choices:
+            choices = [name for name in choices if name != exclude] + [exclude]
         for name in choices:
             try:
                 candidate = self.injected.get(name) or get_engine(config, name)
             except PAError:
                 continue
             if (await candidate.health())["installed"]:
-                chosen, engine_id = candidate, name
-                break
-        if chosen is None:
-            raise PAError("no enabled, installed CLI engine is configured")
-        task = claim(self.facade.engine, config, engine_id)
-        if not task:
-            return None
+                return candidate, name
+        raise PAError("no enabled, installed CLI engine is configured")
+
+    async def _another_engine(self, config, used_engines):
+        for name in config.engines.roles.get("dev", []):
+            if name in used_engines:
+                continue
+            try:
+                candidate = self.injected.get(name) or get_engine(config, name)
+            except PAError:
+                continue
+            if (await candidate.health())["installed"]:
+                return candidate, name
+        return None, None
+
+    async def _drive(self, task, engine, engine_id, config):
+        used_engines = {engine_id}
+        transient_retries = 0
+        max_transient = config.main.limits.transient_retries
+        while True:
+            run_id, result = await self._attempt(task, engine, engine_id, config)
+            if result.error_kind == "cancelled":
+                return {"task_id": task["id"], "status": "cancelled"}
+            if result.receipt is not None and not result.error:
+                return await self._finalize(task, run_id, result, engine_id, config)
+            kind = result.error_kind
+            if kind == "transient" and transient_retries < max_transient:
+                transient_retries += 1
+                await self._backoff(transient_retries)
+                continue
+            if kind in ("auth", "quota", "invalid_output"):
+                next_engine, next_id = await self._another_engine(config, used_engines)
+                if next_engine is not None:
+                    engine, engine_id = next_engine, next_id
+                    used_engines.add(engine_id)
+                    continue
+            return self._requeue_or_escalate(task, result, engine_id, config)
+
+    async def _attempt(self, task, engine, engine_id, config):
         run_id = new_id()
-        with transaction(self.facade.engine) as c:
+        with transaction(self.facade.engine) as connection:
             payload = json.loads(
-                c.execute(
-                    text("SELECT payload_json FROM events WHERE id=:id"), {"id": task["event_id"]}
+                connection.execute(
+                    text("SELECT payload_json FROM events WHERE id=:id"),
+                    {"id": task["event_id"]},
                 ).scalar_one()
             )
             recovered = bool(
-                c.execute(
+                connection.execute(
                     text("SELECT count(*) FROM runs WHERE task_id=:id AND recovered=1"),
                     {"id": task["id"]},
                 ).scalar_one()
             )
-            c.execute(
+            attempt = connection.execute(
+                text("SELECT COALESCE(MAX(attempt), 0) + 1 FROM runs WHERE task_id=:id"),
+                {"id": task["id"]},
+            ).scalar_one()
+            connection.execute(
                 text("""
                 INSERT INTO runs(id,task_id,attempt,engine_id,tier,started_at,recovered)
                 VALUES(:id,:task,:attempt,:engine,'A',:at,:recovered)
@@ -63,7 +123,7 @@ class Worker:
                 {
                     "id": run_id,
                     "task": task["id"],
-                    "attempt": task["retry_count"] + 1,
+                    "attempt": attempt,
                     "engine": engine_id,
                     "at": now(),
                     "recovered": int(recovered),
@@ -75,50 +135,56 @@ class Worker:
             request = EngineRequest(
                 task_id=task["id"],
                 output_dir=output_dir,
-                prompt=assemble(content, policy_version=config.policy_version, recovered=recovered),
+                prompt=assemble(
+                    content,
+                    policy_version=config.policy_version,
+                    recovered=recovered,
+                ),
             )
         except PAError:
-            from pa.engines.base import EngineResult
-
             result = EngineResult(
-                engine_id=engine_id, error="secret detected in input", error_kind="fatal"
+                engine_id=engine_id,
+                error="secret detected in input",
+                error_kind="fatal",
             )
         else:
-            running = asyncio.create_task(chosen.run(request))
-            heartbeat = asyncio.create_task(self.heartbeat(task, asyncio.current_task()))
+            running = asyncio.create_task(engine.run(request))
+            heartbeat = asyncio.create_task(self._heartbeat(task, asyncio.current_task()))
             try:
                 result = await running
                 if result.error_kind == "invalid_output":
-                    request = request.model_copy(
+                    # PRD §8.3: one same-engine correction before switching engines.
+                    repair = request.model_copy(
                         update={
                             "output_dir": output_dir / "repair",
                             "prompt": request.prompt.replace(
                                 "[requirements]",
-                                "[requirements]\n上次回执无效，"
-                                "这次严格遵守 Schema，普通文本任务的 tags 必须为空数组。",
+                                "[requirements]\n上次回执无效，这次严格遵守 Schema，"
+                                "普通文本任务的 tags 必须为空数组。",
                                 1,
                             ),
                         }
                     )
-                    result = await chosen.run(request)
+                    result = await engine.run(repair)
             except asyncio.CancelledError:
-                with transaction(self.facade.engine) as c:
-                    c.execute(
-                        text("UPDATE runs SET ended_at=:at,outcome='cancelled' WHERE id=:id"),
+                with transaction(self.facade.engine) as connection:
+                    connection.execute(
+                        text("UPDATE runs SET ended_at=:at, outcome='cancelled' WHERE id=:id"),
                         {"id": run_id, "at": now()},
                     )
-                return {"task_id": task["id"], "status": "cancelled"}
+                return run_id, EngineResult(
+                    engine_id=engine_id, error="cancelled", error_kind="cancelled"
+                )
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
-        with transaction(self.facade.engine) as c:
-            current = (
-                c.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
-                .mappings()
-                .one()
-            )
+        self._record_attempt(run_id, task, result, engine_id)
+        return run_id, result
+
+    def _record_attempt(self, run_id, task, result, engine_id):
+        with transaction(self.facade.engine) as connection:
             receipt = result.receipt
-            c.execute(
+            connection.execute(
                 text("""
                 UPDATE runs SET ended_at=:at,outcome=:outcome,error_class=:error,
                   receipt_json=:receipt,session_log_path=:log WHERE id=:id
@@ -136,11 +202,12 @@ class Worker:
                     "log": result.log_path,
                 },
             )
-            c.execute(
+            connection.execute(
                 text("""
                 INSERT INTO cost_ledger(id,task_id,run_id,engine_id,skill_id,mode,input_tokens,
                   output_tokens,duration_s,cost_cny,est,at)
-                VALUES(:id,:task,:run,:engine,'sample-direct','token',:input,:output,:duration,NULL,1,:at)
+                VALUES(:id,:task,:run,:engine,'sample-direct','token',:input,:output,:duration,
+                  NULL,1,:at)
             """),
                 {
                     "id": new_id(),
@@ -153,24 +220,30 @@ class Worker:
                     "at": now(),
                 },
             )
+
+    async def _finalize(self, task, run_id, result, engine_id, config):
+        with transaction(self.facade.engine) as connection:
+            current = (
+                connection.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                .mappings()
+                .one()
+            )
+            receipt = result.receipt
             if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
                 return {"task_id": task["id"], "status": current["status"]}
             need = (
-                receipt is None
-                or receipt.status in {"failed", "blocked", "needs_human"}
-                or (
-                    receipt.draft
-                    or receipt.code_changed
-                    or receipt.risk != "low"
-                    or receipt.confidence < config.main.human_gate.confidence_below
-                    or bool(set(receipt.tags) & SEVEN_TAGS)
-                    or receipt.usage.input_tokens + receipt.usage.output_tokens > 200_000
-                )
+                receipt.status in {"failed", "blocked", "needs_human"}
+                or receipt.draft
+                or receipt.code_changed
+                or receipt.risk != "low"
+                or receipt.confidence < config.main.human_gate.confidence_below
+                or bool(set(receipt.tags) & SEVEN_TAGS)
+                or receipt.usage.input_tokens + receipt.usage.output_tokens > 200_000
             )
-            dropped = receipt is not None and receipt.status == "dropped"
+            dropped = receipt.status == "dropped"
             status = "awaiting_decision" if need and not dropped else "succeeded"
             next_task = transition(
-                c,
+                connection,
                 task["id"],
                 status,
                 current["version"],
@@ -178,10 +251,14 @@ class Worker:
             )
             if status == "succeeded":
                 next_task = transition(
-                    c, task["id"], "judged", next_task["version"], [Reason(code="judged")]
+                    connection,
+                    task["id"],
+                    "judged",
+                    next_task["version"],
+                    [Reason(code="judged")],
                 )
                 next_task = transition(
-                    c,
+                    connection,
                     task["id"],
                     "closed",
                     next_task["version"],
@@ -190,10 +267,10 @@ class Worker:
             else:
                 question = (
                     receipt.human_action.question
-                    if receipt and receipt.human_action
+                    if receipt.human_action
                     else "此任务需要你接手处理。"
                 )
-                c.execute(
+                connection.execute(
                     text("""
                     INSERT INTO decisions(
                       id,task_id,kind,question,nonce,status,expires_at,reason_json)
@@ -217,32 +294,112 @@ class Worker:
                 and config.sources.sources.feishu.enabled
                 and config.notify.target.id
             ):
-                summary = (
-                    receipt.summary
-                    if receipt
-                    else "执行未完成，请检查本机 Agent 的登录或连接状态。"
-                )
+                summary = receipt.summary
                 if status == "awaiting_decision":
                     summary = "需要你处理：" + summary
-                enqueue(
-                    c,
+                level = P1 if status == "awaiting_decision" else P2
+                request_notification(
+                    connection,
+                    config=config,
                     task_id=task["id"],
-                    kind="feishu.send",
-                    idem_key=f"{task['id']}:result:{run_id}:1",
-                    payload=target_payload(config, {"text": summary}),
-                    order_key="feishu:" + config.notify.target.id,
+                    level=level,
+                    text_=summary,
                 )
-            c.execute(
+            connection.execute(
                 text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
                 {"id": task["id"]},
             )
-            return {"task_id": task["id"], "engine": engine_id, "status": next_task["status"]}
+            return {
+                "task_id": task["id"],
+                "engine": engine_id,
+                "status": next_task["status"],
+            }
 
-    async def heartbeat(self, task, running):
+    def _requeue_or_escalate(self, task, result, engine_id, config):
+        with transaction(self.facade.engine) as connection:
+            current = (
+                connection.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                .mappings()
+                .one()
+            )
+            if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
+                return {"task_id": task["id"], "status": current["status"]}
+            if current["retry_count"] < config.main.limits.max_retry:
+                next_task = transition(
+                    connection,
+                    task["id"],
+                    "failed",
+                    current["version"],
+                    [Reason(code="retry_scheduled")],
+                )
+                transition(
+                    connection,
+                    task["id"],
+                    "queued",
+                    next_task["version"],
+                    [Reason(code="retry")],
+                )
+                connection.execute(
+                    text("""
+                    UPDATE tasks SET retry_count=retry_count + 1, engine_hint=:engine,
+                      lease_owner=NULL, lease_until=NULL WHERE id=:id
+                """),
+                    {"id": task["id"], "engine": engine_id},
+                )
+                return {
+                    "task_id": task["id"],
+                    "status": "queued",
+                    "retry_count": current["retry_count"] + 1,
+                    "engine_hint": engine_id,
+                }
+            next_task = transition(
+                connection,
+                task["id"],
+                "awaiting_decision",
+                current["version"],
+                [Reason(code="retry_exhausted")],
+            )
+            connection.execute(
+                text("""
+                INSERT INTO decisions(id,task_id,kind,question,nonce,status,expires_at,
+                  reason_json)
+                VALUES(:id,:task,'task',:question,:nonce,'pending',:expires,:reason)
+            """),
+                {
+                    "id": new_id(),
+                    "task": task["id"],
+                    "question": "自动重试已达上限，需要你接手处理。",
+                    "nonce": secrets.token_urlsafe(24),
+                    "expires": (datetime.now(UTC) + timedelta(hours=24)).isoformat(),
+                    "reason": json.dumps(
+                        [
+                            {"code": "retry_exhausted"},
+                            {"code": result.error_kind or "unknown"},
+                        ]
+                    ),
+                },
+            )
+            connection.execute(
+                text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
+                {"id": task["id"]},
+            )
+            return {
+                "task_id": task["id"],
+                "status": next_task["status"],
+                "reason": "retry_exhausted",
+            }
+
+    async def _backoff(self, attempt):
+        # Exponential backoff with jitter (PRD §16.2): base 0.5s -> 0.5, 1, 2.
+        base = 0.5 * 2 ** (attempt - 1)
+        jitter = secrets.SystemRandom().uniform(0, base * 0.25)
+        await self.sleeper(base + jitter)
+
+    async def _heartbeat(self, task, running):
         while True:
             await asyncio.sleep(10)
-            with transaction(self.facade.engine) as c:
-                result = c.execute(
+            with transaction(self.facade.engine) as connection:
+                result = connection.execute(
                     text("""
                     UPDATE tasks SET lease_until=:until
                     WHERE id=:id AND lease_owner=:owner AND status='running'

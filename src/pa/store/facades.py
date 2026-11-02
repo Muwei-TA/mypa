@@ -1,19 +1,35 @@
+from __future__ import annotations
+
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import OperationalError
 
 from pa.common import PAError, new_id, now
 from pa.config.loader import load
 from pa.hub import pause as pa_pause
 from pa.hub.pipeline import ingest
+from pa.hub.ranking import fill_missing, plan_move, reindex
 from pa.ingress.base import Event
 from pa.store.db import make_engine, transaction
 from pa.store.models import Reason
 from pa.store.transitions import transition
 
 READABLE = frozenset({"events", "tasks", "observations", "effects", "audit_log"})
+ACTIVE_STATUSES = (
+    "queued",
+    "leased",
+    "running",
+    "awaiting_ci",
+    "awaiting_decision",
+    "failed",
+    "suspended",
+)
+PRIORITIES = ("P0", "P1", "P2", "P3")
+QUEUE_ORDER = (
+    "pinned DESC, priority ASC, manual_rank ASC NULLS LAST, skill_rank ASC, enqueued_at ASC"
+)
 
 
 class OwnerFacade:
@@ -123,3 +139,81 @@ class OwnerFacade:
     def status(self):
         with self.engine.connect() as connection:
             return {**pa_pause.state(connection), "policy_version": self.config.policy_version}
+
+    def move_task(
+        self,
+        task_id: str,
+        *,
+        before: str | None = None,
+        to_top: bool = False,
+        to_bottom: bool = False,
+    ):
+        with self.writing("task.move") as connection:
+            rows = (
+                connection.execute(
+                    text(
+                        f"SELECT id, manual_rank FROM tasks WHERE status IN :statuses "
+                        f"ORDER BY {QUEUE_ORDER}"
+                    ).bindparams(bindparam("statuses", expanding=True)),
+                    {"statuses": ACTIVE_STATUSES},
+                )
+                .mappings()
+                .all()
+            )
+            ids = [row["id"] for row in rows]
+            if task_id not in ids:
+                raise PAError("task is not in the active queue", "not_found", 4)
+            ranks = {row["id"]: row["manual_rank"] for row in rows}
+            # Ranks added for previously unranked items must be persisted too.
+            filled = fill_missing(ids, ranks)
+            initialized = {id_: filled[id_] for id_ in ids if ranks[id_] is None and id_ != task_id}
+            _, changed = plan_move(
+                ids, ranks, task_id, before=before, to_top=to_top, to_bottom=to_bottom
+            )
+            updates = {**initialized, **changed}
+            for id_, rank in updates.items():
+                connection.execute(
+                    text("UPDATE tasks SET manual_rank=:rank WHERE id=:id"),
+                    {"id": id_, "rank": rank},
+                )
+            return {"task_id": task_id, "manual_rank": changed[task_id], "changed": len(updates)}
+
+    def set_pinned(self, task_id: str, pinned: bool):
+        with self.writing("task.pin") as connection:
+            result = connection.execute(
+                text("UPDATE tasks SET pinned=:pinned WHERE id=:id"),
+                {"id": task_id, "pinned": int(pinned)},
+            )
+            if not result.rowcount:
+                raise PAError("task not found", "not_found", 4)
+            return {"task_id": task_id, "pinned": pinned}
+
+    def set_priority(self, task_id: str, priority: str):
+        if priority not in PRIORITIES:
+            raise PAError("priority must be one of P0, P1, P2, P3")
+        with self.writing("task.priority") as connection:
+            result = connection.execute(
+                text("UPDATE tasks SET priority=:priority WHERE id=:id"),
+                {"id": task_id, "priority": priority},
+            )
+            if not result.rowcount:
+                raise PAError("task not found", "not_found", 4)
+            return {"task_id": task_id, "priority": priority}
+
+    def reorder_skills(self, skill_ids: list[str]):
+        with self.writing("skill.reorder") as connection:
+            known = [
+                row[0]
+                for row in connection.execute(
+                    text("SELECT DISTINCT skill_id FROM tasks ORDER BY skill_id")
+                ).all()
+            ]
+            if sorted(skill_ids) != sorted(known) or len(set(skill_ids)) != len(skill_ids):
+                raise PAError("provide every known skill id exactly once")
+            ranks = reindex(skill_ids)
+            for skill_id, rank in ranks.items():
+                connection.execute(
+                    text("UPDATE tasks SET skill_rank=:rank WHERE skill_id=:skill"),
+                    {"skill": skill_id, "rank": rank},
+                )
+            return {"skill_rank": ranks}

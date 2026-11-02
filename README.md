@@ -4,11 +4,21 @@
 
 ## 开发状态
 
-当前为 M1 基础开发版：已实现 CLI、三类配置校验、SQLite WAL 数据库迁移、
-带乐观锁与审计记录的任务状态机、手动事件到任务队列的接单链路，及事务性发件箱入库。
+当前为 M1 开发版，已打通本机端到端执行链路：事件接入（手动/飞书/定时）→
+规则路由与同主题合并 → 派单（槽位、租约、过期恢复）→ 本地 CLI 引擎执行与
+心跳续租 → 回执研判与人工门禁 → 自动结案或转人工决定 → 分级通知。
 
-**任务目前停留在 `queued`，尚未接入执行引擎与飞书，完整 M1 尚未完成。**
-分项进度、验收范围和待决事项见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+已具备的关键能力：
+
+- 三个本地 CLI 引擎适配器（Codex / Hermes / WorkBuddy）、进程沙箱与本地发现；
+- 事务性发件箱、发件箱 runner（退避/重试/幂等）与飞书发送 handler；
+- 飞书长连接接收进程与配对；判断层自动重试、故障转移与重派；
+- 通知 P0–P3 分级、P2 十分钟合并窗口、飞书连续不可用 15 分钟后的 macOS
+  `osascript` 本地兜底与待补发标记；
+- 任务/技能排序值维护（置顶、优先级、移动、重编号）。
+
+**尚未实施**：REST 接口（M1-18）、M2 及以后能力、HTTP 服务与 launchd 托管、
+真实外部平台部署。分项进度、验收范围和待决事项见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
 ## 本地开发
 
@@ -31,14 +41,15 @@ uv run --frozen pa --config-dir .pa-local/config task list --json
 
 ```sh
 uv run --frozen pytest
-uv run --frozen ruff check src tests alembic
-uv run --frozen ruff format --check src tests alembic
+uv run --frozen ruff check src tests alembic scripts
+uv run --frozen ruff format --check src tests alembic scripts
 uv build
 ```
 
 数据库、虚拟环境、密钥文件、缓存和构建产物均由 `.gitignore` 排除。
 附件是产品需求和参考资料；其中部署指令不代表已经部署。
-当前只提供本地 owner CLI，尚未启动 HTTP 服务、后台执行器或 launchd 服务。
+后台执行通过 `pa serve` 在本机运行（含飞书接收子进程）；尚未启动 HTTP 服务或
+launchd 托管。
 
 ## 资料与扩展
 
@@ -46,5 +57,6 @@ uv build
 目前 `pa init` 生成本阶段可校验的最小配置，**不要直接将整个模板目录复制到运行配置目录**。
 未实现的配置文件会明确报错，不会默默忽略。
 
-九类插件扩展点通过 `pa plugin list --json` 查看。已注册 manual/cron 事件转换器和
-只读 env 密钥后端，其他扩展点留空。
+九类插件扩展点通过 `pa plugin list --json` 查看。已注册 manual/cron 事件转换器、
+codex/hermes/workbuddy 三个引擎、env/keychain 密钥后端与 feishu.send effect handler，
+其余扩展点留空。

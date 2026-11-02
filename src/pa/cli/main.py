@@ -32,6 +32,7 @@ engine_app = typer.Typer(no_args_is_help=True, help="本机 Agent 发现与连�
 secret_app = typer.Typer(no_args_is_help=True, help="密钥安全输入与只读检查")
 feishu_app = typer.Typer(no_args_is_help=True, help="飞书长连接配置、验证与本人配对")
 service_app = typer.Typer(no_args_is_help=True, help="macOS 后台服务")
+skill_app = typer.Typer(no_args_is_help=True, help="Skill 全局排序")
 for name, group in (
     ("config", config_app),
     ("event", event_app),
@@ -43,6 +44,7 @@ for name, group in (
     ("secret", secret_app),
     ("feishu", feishu_app),
     ("service", service_app),
+    ("skill", skill_app),
 ):
     app.add_typer(group, name=name)
 
@@ -250,6 +252,46 @@ def task_show(ctx: typer.Context, id: str, json_output: JsonOption = False):
 def task_cancel(ctx: typer.Context, id: str, json_output: JsonOption = False):
     with owner(ctx) as facade:
         output(facade.cancel(id))
+
+
+@task_app.command("move")
+@guarded
+def task_move(
+    ctx: typer.Context,
+    id: str,
+    before: Annotated[str | None, typer.Option(help="移动到该任务之前")] = None,
+    to_top: Annotated[bool, typer.Option("--to-top")] = False,
+    to_bottom: Annotated[bool, typer.Option("--to-bottom")] = False,
+    json_output: JsonOption = False,
+):
+    with owner(ctx) as facade:
+        output(facade.move_task(id, before=before, to_top=to_top, to_bottom=to_bottom))
+
+
+@task_app.command("pin")
+@guarded
+def task_pin(ctx: typer.Context, id: str, json_output: JsonOption = False):
+    with owner(ctx) as facade:
+        output(facade.set_pinned(id, True))
+
+
+@task_app.command("unpin")
+@guarded
+def task_unpin(ctx: typer.Context, id: str, json_output: JsonOption = False):
+    with owner(ctx) as facade:
+        output(facade.set_pinned(id, False))
+
+
+@task_app.command("priority")
+@guarded
+def task_priority(
+    ctx: typer.Context,
+    id: str,
+    priority: Annotated[str, typer.Argument(help="P0/P1/P2/P3")],
+    json_output: JsonOption = False,
+):
+    with owner(ctx) as facade:
+        output(facade.set_priority(id, priority))
 
 
 @observe_app.command("list")
@@ -499,3 +541,14 @@ def service_status(json_output: JsonOption = False):
     from pa.procs.service import action
 
     output(action("status"))
+
+
+@skill_app.command("reorder")
+@guarded
+def skill_reorder(
+    ctx: typer.Context,
+    skills: Annotated[str, typer.Argument(help="逗号分隔的完整 Skill 顺序，如 a,b,c")],
+    json_output: JsonOption = False,
+):
+    with owner(ctx) as facade:
+        output(facade.reorder_skills([item.strip() for item in skills.split(",") if item.strip()]))

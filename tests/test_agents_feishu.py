@@ -21,6 +21,7 @@ from pa.engines.process import run_process
 from pa.hub.dispatcher import recover_expired
 from pa.ingress.feishu import parse_message
 from pa.ingress.manual import ManualAdapter
+from pa.notify.dispatch import flush_due
 from pa.notify.feishu import FeishuClient
 from pa.notify.pairing import create_pairing, try_pair
 from pa.procs.runtime import serve
@@ -63,22 +64,6 @@ def feishu_event(*, actor="ou_owner", message_id="om_1", content="概括这段�
             },
         },
     }
-
-
-@pytest.fixture
-def configured(facade, config_dir):
-    save_files(
-        config_dir,
-        {
-            "engines.yaml": {
-                "engines": {"fake": {"adapter": "codex_cli", "command": [sys.executable]}},
-                "roles": {"dev": ["fake"]},
-            }
-        },
-    )
-    configure_feishu(config_dir, app_id="cli_test", owner_open_id="ou_owner")
-    facade.config = load(config_dir)
-    return facade
 
 
 class FakeEngine:
@@ -180,6 +165,11 @@ def test_worker_closes_and_enqueues_in_same_transaction(configured, config_dir):
         "judged",
         "closed",
     ]
+    # P2 result cards are buffered, not enqueued immediately.
+    assert configured.list("effects")["items"] == []
+    with transaction(configured.engine) as c:
+        flushed = flush_due(c, config=configured.config, force=True)
+    assert flushed["items"] == 1
     effect = configured.list("effects")["items"][0]
     assert effect["kind"] == "feishu.send"
     assert json.loads(effect["payload_json"])["receive_id"] == "ou_owner"
