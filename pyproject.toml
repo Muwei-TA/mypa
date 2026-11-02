@@ -11,6 +11,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.14,<2",
   "httpx>=0.28,<1",
+  "jinja2>=3.1.6",
   "jsonschema>=4.23,<5",
   "keyring>=25.6,<27",
   "lark-oapi>=1.5,<2",
@@ -27,6 +28,10 @@ pa = "pa.cli.main:app"
 [project.entry-points."pa.ingress"]
 manual = "pa.ingress.manual:ManualAdapter"
 cron = "pa.ingress.cron:CronAdapter"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
 [project.entry-points."pa.engines"]
 codex_cli = "pa.engines.local:CodexCLI"
 hermes_cli = "pa.engines.local:HermesCLI"

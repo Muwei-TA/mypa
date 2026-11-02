@@ -27,6 +27,21 @@
   飞书连续失败 15 分钟触发 macOS 本地通知、写入 backfill 并重置窗口；
   `decision_only` 不发结案卡。`serve` 主循环每轮刷新到期窗口。
 
+## 2026-11-02（第三批：M1-17 sample-direct Skill）
+
+按关键路径（M1-15 → M1-17 → M1-18）推进，把 Skill 从硬编码提示词升级为
+包内数据驱动：
+
+- 新增包内资产 `src/pa/skills/assets/sample-direct/{skill.yaml,prompt.md}`，与
+  07 配置模板保持一致；hatch 已确认把资产打入 wheel。
+- 新增 `skills/loader.py`：`SkillSpec` 等 Pydantic 模型（extra=forbid），覆盖
+  引擎选择器（role/ref 恰好一个）、权限、人工门禁（7 标签强制）、交付、
+  预算、记忆等字段；提供 `load_skill / list_skills / render_prompt`。
+- 引入 PRD §7.1 要求的 **Jinja2** 依赖渲染 `prompt.md`；`prompt_assembly.assemble`
+  改为加载 Skill 资产驱动 `[skill]` 段，保留 8 段固定顺序、untrusted 转义、
+  secret 拦截与 recovery 前缀。
+- 验收：文本/URL 输入经 worker 完成读取 → 核实 → 摘要回执 → `closed` 结案。
+
 ## 首批实现范围
 
 | 任务 | 状态 | 本次结果与边界 |
@@ -44,6 +59,7 @@
 | M1-12 | 部分 | 持久化暂停标记、事件继续入库、决定到期顺延；执行器已接入 |
 | M1-15 | 完成 | transient 同引擎重试、auth/quota/invalid_output 故障转移、重派与 engine_hint、重试上限升级 |
 | M1-16 | 完成 | P0–P3 分级、P2 合并窗口、飞书失败 15 分钟 osascript 兜底与 backfill、decision_only 不发卡 |
+| M1-17 | 完成 | sample-direct 包内资产、Skill 加载器与 Jinja2 渲染、资产驱动提示词、端到端读取核实摘要结案 |
 | M1-19 | 部分 | init/migrate/doctor/config/event/task 查询取消/pause/resume/status/observe/effect/plugin，及 move/pin/priority、skill reorder |
 | M1-18 / M2–M5 | 未实现 | REST 接口、真实模型研判、PR、GUI、容器与恢复演练未验收 |
 
@@ -66,6 +82,8 @@
 - 新增覆盖：transient 重试不增 retry_count、重试耗尽重派与 engine_hint、auth/quota
   立即换引擎、invalid_output 修复后换引擎、重派 deprioritize、P2 窗口合并、
   15 分钟本地兜底与 backfill、decision_only 不发结案卡。
+- 第三批后 `pytest` 增至 **212 个用例通过**：新增 Skill 加载器 8 个（含模型校验、
+  prompt 渲染、文本/URL 端到端结案）；已核对 wheel 内含 `skills/assets` 资产。
 
 ## 实现约定与待办
 
