@@ -4,6 +4,7 @@ from pathlib import Path
 import uvicorn
 
 from pa.api.app import create_app
+from pa.secrets.resolver import resolve
 from pa.store.facades import OwnerFacade
 
 
@@ -15,8 +16,9 @@ def serve_http(
     api_token: str | None = None,
 ) -> None:
     facade = OwnerFacade(config_dir)
-    app = create_app(facade, api_token=api_token)
     try:
+        token = api_token or resolve(facade.config.main.server.api_owner_token)
+        app = create_app(facade, api_token=token)
         uvicorn.run(app, host=host, port=port, log_level="info")
     finally:
         facade.close()

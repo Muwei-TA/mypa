@@ -15,6 +15,7 @@ from pa.notify.dispatch import request_notification
 from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
 from pa.skills.prompt_assembly import assemble
+from pa.skills.receipt import Usage
 from pa.store.db import transaction
 from pa.store.models import Reason
 from pa.store.transitions import transition
@@ -43,7 +44,8 @@ class Worker:
             return connection.execute(
                 text(
                     "SELECT engine_hint FROM tasks WHERE status='queued' "
-                    "ORDER BY enqueued_at LIMIT 1"
+                    "AND skill_id='sample-direct' ORDER BY pinned DESC,priority ASC,"
+                    "manual_rank ASC NULLS LAST,skill_rank ASC,enqueued_at ASC LIMIT 1"
                 )
             ).scalar_one_or_none()
 
@@ -78,7 +80,11 @@ class Worker:
         transient_retries = 0
         max_transient = config.main.limits.transient_retries
         while True:
+            if stopped := self._stopped(task):
+                return stopped
             run_id, result = await self._attempt(task, engine, engine_id, config)
+            if stopped := self._stopped(task):
+                return stopped
             if result.error_kind == "cancelled":
                 return {"task_id": task["id"], "status": "cancelled"}
             if result.receipt is not None and not result.error:
@@ -152,7 +158,7 @@ class Worker:
             heartbeat = asyncio.create_task(self._heartbeat(task, asyncio.current_task()))
             try:
                 result = await running
-                if result.error_kind == "invalid_output":
+                if result.error_kind == "invalid_output" and not self._stopped(task):
                     # PRD §8.3: one same-engine correction before switching engines.
                     repair = request.model_copy(
                         update={
@@ -165,7 +171,15 @@ class Worker:
                             ),
                         }
                     )
+                    previous = result.usage.model_copy(deep=True)
                     result = await engine.run(repair)
+                    result.usage = Usage(
+                        input_tokens=previous.input_tokens + result.usage.input_tokens,
+                        output_tokens=previous.output_tokens + result.usage.output_tokens,
+                        duration_s=previous.duration_s + result.usage.duration_s,
+                    )
+                    if result.receipt:
+                        result.receipt.usage = result.usage
             except asyncio.CancelledError:
                 with transaction(self.facade.engine) as connection:
                     connection.execute(
@@ -383,11 +397,32 @@ class Worker:
                 text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
                 {"id": task["id"]},
             )
+            if config.sources.sources.feishu.enabled and config.notify.target.id:
+                request_notification(
+                    connection,
+                    config=config,
+                    task_id=task["id"],
+                    level=P1,
+                    text_="自动重试已达上限，需要你接手处理。",
+                )
             return {
                 "task_id": task["id"],
                 "status": next_task["status"],
                 "reason": "retry_exhausted",
             }
+
+    def _stopped(self, task):
+        with self.facade.engine.connect() as connection:
+            current = (
+                connection.execute(
+                    text("SELECT status,lease_owner FROM tasks WHERE id=:id"), {"id": task["id"]}
+                )
+                .mappings()
+                .one()
+            )
+        if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
+            return {"task_id": task["id"], "status": current["status"]}
+        return None
 
     async def _backoff(self, attempt):
         # Exponential backoff with jitter (PRD §16.2): base 0.5s -> 0.5, 1, 2.

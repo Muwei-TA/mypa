@@ -107,6 +107,31 @@ class OwnerFacade:
                 ]
             return result
 
+    def list_tasks(self, *, status=None, skill=None, limit=50, cursor=None):
+        if not 1 <= limit <= 500:
+            raise PAError("limit must be between 1 and 500")
+        clauses, params = [], {"limit": limit + 1}
+        for field, value in (("status", status), ("skill_id", skill)):
+            if value is not None:
+                clauses.append(f"{field}=:{field}")
+                params[field] = value
+        if cursor:
+            clauses.append("id<:cursor")
+            params["cursor"] = cursor
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    text("SELECT * FROM tasks" + where + " ORDER BY id DESC LIMIT :limit"), params
+                )
+                .mappings()
+                .all()
+            )
+        return {
+            "items": [dict(row) for row in rows[:limit]],
+            "next_cursor": rows[limit - 1]["id"] if len(rows) > limit else None,
+        }
+
     def cancel(self, task_id: str):
         with self.writing("task.cancel") as connection:
             row = connection.execute(

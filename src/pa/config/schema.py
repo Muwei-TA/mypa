@@ -23,6 +23,7 @@ class Model(BaseModel):
 
 class Server(Model):
     bind: str = "127.0.0.1:8787"
+    api_owner_token: str = "secret://keychain/pa/api_owner_token"
     public_paths: list[str] = ["/hooks/github", "/hooks/feishu", "/healthz"]
 
     @field_validator("public_paths")
@@ -30,6 +31,16 @@ class Server(Model):
     def public_only(cls, value):
         if not set(value) <= {"/hooks/github", "/hooks/feishu", "/healthz"}:
             raise ValueError("public_paths cannot expose private API routes")
+        return value
+
+    @field_validator("api_owner_token")
+    @classmethod
+    def token_ref_only(cls, value):
+        if (
+            not value.startswith("secret://")
+            or not value.removeprefix("secret://").partition("/")[2]
+        ):
+            raise ValueError("API token must be a secret:// reference")
         return value
 
 

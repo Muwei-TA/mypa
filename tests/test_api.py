@@ -2,18 +2,27 @@ from fastapi.testclient import TestClient
 
 from pa.api.app import create_app
 
+TOKEN = "test-owner-token"
+
+
+def authorized_client(facade):
+    client = TestClient(create_app(facade, api_token=TOKEN))
+    client.headers["Authorization"] = "Bearer " + TOKEN
+    return client
+
+
 BODY = {"type": "manual.test", "payload": {"skill": "sample-direct", "text": "hello"}}
 
 
 def test_healthz_is_public(facade):
-    client = TestClient(create_app(facade))
+    client = authorized_client(facade)
     response = client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
 def test_health_reports_db_check(facade):
-    client = TestClient(create_app(facade))
+    client = authorized_client(facade)
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     payload = response.json()
@@ -22,7 +31,7 @@ def test_health_reports_db_check(facade):
 
 
 def test_post_event_creates_task(facade):
-    client = TestClient(create_app(facade))
+    client = authorized_client(facade)
     response = client.post("/api/v1/events", json=BODY)
     assert response.status_code == 200
     result = response.json()
@@ -31,7 +40,7 @@ def test_post_event_creates_task(facade):
 
 
 def test_idempotency_key_dedupicates(facade):
-    client = TestClient(create_app(facade))
+    client = authorized_client(facade)
     headers = {"Idempotency-Key": "idem-123"}
     first = client.post("/api/v1/events", json=BODY, headers=headers)
     second = client.post("/api/v1/events", json=BODY, headers=headers)
@@ -41,7 +50,7 @@ def test_idempotency_key_dedupicates(facade):
 
 
 def test_tasks_filter_by_status_and_skill(facade):
-    client = TestClient(create_app(facade))
+    client = authorized_client(facade)
     client.post("/api/v1/events", json=BODY)
     queued = client.get("/api/v1/tasks?status=queued").json()["items"]
     assert queued and all(row["status"] == "queued" for row in queued)
@@ -51,7 +60,7 @@ def test_tasks_filter_by_status_and_skill(facade):
 
 
 def test_system_pause_and_resume(facade):
-    client = TestClient(create_app(facade))
+    client = authorized_client(facade)
     paused = client.post("/api/v1/system:pause")
     assert paused.status_code == 200
     assert client.get("/api/v1/system/state").json()["paused"] is True
