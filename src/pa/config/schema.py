@@ -89,6 +89,38 @@ class Defaults(Model):
     notify: Literal["decision_only", "result", "never"] = "decision_only"
 
 
+class RepoClassEntry(Model):
+    repos: list[str] = []
+
+
+class MergeMatrixCell(Model):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    low: Literal["auto_release", "auto_merge_notify", "confirm"]
+    medium: Literal[
+        "auto_merge_notify", "confirm", "confirm_merge_and_release", "confirm_no_auto_release"
+    ]
+    high: Literal[
+        "confirm", "confirm_merge_and_release", "confirm_no_auto_release", "auto_merge_notify"
+    ]
+
+
+class MergePolicy(Model):
+    repo_classes: dict[str, RepoClassEntry] = {}
+    matrix: dict[str, MergeMatrixCell] = {}
+    default_class: str = "personal"
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        known = set(self.repo_classes) | {"sandbox", "personal", "prod"}
+        if self.default_class not in known:
+            raise ValueError(f"default_class {self.default_class!r} is not a known class")
+        for name in self.matrix:
+            if name not in known:
+                raise ValueError(f"matrix entry {name!r} is not a known repo class")
+        return self
+
+
 class ConsoleAuth(Model):
     password_hash: str
     totp: str
@@ -286,8 +318,15 @@ CONFIG_MODELS: dict[str, type[Model]] = {
     "sources.yaml": SourcesConfig,
     "notify.yaml": NotifyConfig,
     "schedules.yaml": SchedulesConfig,
+    "merge_policy.yaml": MergePolicy,
 }
-OPTIONAL_CONFIGS = {"engines.yaml", "sources.yaml", "notify.yaml", "schedules.yaml"}
+OPTIONAL_CONFIGS = {
+    "engines.yaml",
+    "sources.yaml",
+    "notify.yaml",
+    "schedules.yaml",
+    "merge_policy.yaml",
+}
 
 
 class LoadedConfig(Model):
@@ -298,5 +337,6 @@ class LoadedConfig(Model):
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     schedules: SchedulesConfig = Field(default_factory=SchedulesConfig)
+    merge_policy: MergePolicy = Field(default_factory=MergePolicy)
     policy_version: str
     raw: dict[str, Any]
