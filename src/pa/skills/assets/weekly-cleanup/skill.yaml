@@ -1,0 +1,42 @@
+# skills/weekly-cleanup/skill.yaml（PRD v1.1 §7、M5-13）
+id: weekly-cleanup
+name: 周边仓库周清
+version: 1
+enabled: true
+rank: 1100
+priority: P3
+concurrency: 1
+timeout_min: 30
+mode: code                     # 清理型：改代码走 PR 与 CI
+engines:
+  - role: dev
+allowed_tiers: [A, B]
+blocked_commands: [git push --force, rm -rf /]
+tools: [memory_search, repo_read]
+permissions:
+  network: allowlist
+  network_allow: ["github.com", "*.github.com"]
+  fs: workspace_only
+  repo_write: true             # 只操作沙盒与个人仓库，每动作开 PR
+risk_ceiling: low
+human_gate:
+  confidence_below: 0.7
+  always_on: [delete_data, stop_service, spend_money, external_message,
+              product_direction, secret_change, permission_change]
+  use_precedents: true
+delivery:
+  ui_change_requires_screenshots: true
+  draft_must_be_marked: true
+communication:
+  ack: once
+  max_chat_words: 100
+budget:
+  per_task_tokens: 200000
+  per_task_turns: 30
+  daily_cny: null
+steps: [inspect_repos, list_stale_branches, propose_prs, wait_ci, report]
+sections: {}
+output_schema: default
+memory:
+  read: [skill:weekly-cleanup, global, precedents]
+  write: lessons
