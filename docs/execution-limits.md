@@ -1,7 +1,8 @@
 # 执行额度与适配器边界
 
 对应 M1-13–15、PRD §8.1/§15/§19.1 及 R-23。额度不依赖金额预算；实际货币预算
-仍属于 M5。所有工作区升级后先执行 `pa migrate`，当前 head 为 `0005_turn_allowance`。
+仍属于 M5。所有工作区升级后先执行 `pa migrate`；轮数额度从 `0005_turn_allowance`
+引入，当前 head 为 `0006_worker_checkpoints`。
 
 ## 跨调用计量
 

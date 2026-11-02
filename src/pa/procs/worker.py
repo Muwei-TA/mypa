@@ -17,6 +17,7 @@ from pa.notify.dispatch import request_notification
 from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
 from pa.plugins import discover
+from pa.procs import checkpoints
 from pa.skills.limits import ExecutionBudget
 from pa.skills.loader import load_skill
 from pa.skills.prompt_assembly import assemble
@@ -37,6 +38,12 @@ class Worker:
 
     async def once(self, engine_id=None):
         config = load(self.config_dir)
+        pending = checkpoints.take(self.facade.engine)
+        if pending:
+            task, saved = pending
+            if saved["phase"] == "escalate":
+                return self._escalate_limit(task, saved["reason"], config)
+            return await self._drive(task, None, saved["engine_id"], config, saved=saved)
         recover_expired(self.facade.engine)
         for queued in self._queue_candidates():
             skill = load_skill(queued["skill_id"])
@@ -96,6 +103,8 @@ class Worker:
             task_id=task["id"],
         ):
             with transaction(self.facade.engine) as connection:
+                if state(connection)["paused"]:
+                    return None, None
                 if not slot_available(connection, config, name, task_id=task["id"]):
                     continue
                 reserved = connection.execute(
@@ -110,7 +119,7 @@ class Worker:
                     return candidate, name
         return None, None
 
-    async def _drive(self, task, engine, engine_id, config):
+    async def _drive(self, task, engine, engine_id, config, *, saved=None):
         skill = load_skill(task["skill_id"])
         with self.facade.engine.connect() as connection:
             usage = connection.execute(
@@ -137,15 +146,52 @@ class Worker:
             max_turns=skill.budget.per_task_turns,
             turns=turns,
         )
-        used_engines = {engine_id}
-        transient_retries = 0
+        used_engines = set(saved["used_engines"]) if saved else {engine_id}
+        transient_retries = saved["transient_retries"] if saved else 0
+        result = (
+            EngineResult.model_validate(saved["result"])
+            if saved and saved["phase"] == "result"
+            else None
+        )
+        run_id = saved.get("run_id") if saved else None
         max_transient = config.main.limits.transient_retries
         while True:
             if stopped := self._stopped(task):
                 return stopped
-            if reason := budget.exhausted:
-                return self._escalate_limit(task, reason, config)
-            run_id, result = await self._attempt(task, engine, engine_id, config, budget)
+            context = {
+                "engine_id": engine_id,
+                "used_engines": sorted(used_engines),
+                "transient_retries": transient_retries,
+            }
+            payload = (
+                {
+                    **context,
+                    "phase": "result",
+                    "run_id": run_id,
+                    "result": result.model_dump(mode="json"),
+                }
+                if result is not None
+                else {**context, "phase": "next"}
+            )
+            with transaction(self.facade.engine) as connection:
+                if deferred := checkpoints.defer_if_paused(connection, task, payload):
+                    return deferred
+            if result is None:
+                if reason := budget.exhausted:
+                    return self._escalate_limit(task, reason, config)
+                if engine is None:
+                    engine, engine_id = await self._resume_engine(task, config, engine_id)
+                    if engine is None:
+                        with transaction(self.facade.engine) as connection:
+                            return checkpoints.hold(connection, task, payload)
+                    used_engines.add(engine_id)
+                    context.update(engine_id=engine_id, used_engines=sorted(used_engines))
+                run_id, result = await self._attempt(
+                    task, engine, engine_id, config, budget, context
+                )
+                # The result and continuation context are already durable in the
+                # same transaction as the run and usage, before any judgement.
+                continue
             if stopped := self._stopped(task):
                 return stopped
             if result.error_kind == "cancelled":
@@ -162,6 +208,9 @@ class Worker:
             kind = result.error_kind
             if kind == "transient" and transient_retries < max_transient:
                 transient_retries += 1
+                self._save_next(task, engine_id, used_engines, transient_retries)
+                engine = None
+                result = None
                 await self._backoff(transient_retries)
                 continue
             if kind in ("auth", "quota", "invalid_output"):
@@ -169,8 +218,51 @@ class Worker:
                 if next_engine is not None:
                     engine, engine_id = next_engine, next_id
                     used_engines.add(engine_id)
+                    self._save_next(task, engine_id, used_engines, transient_retries)
+                    engine = None
+                    result = None
                     continue
             return self._requeue_or_escalate(task, result, engine_id, config)
+
+    def _save_next(self, task, engine_id, used_engines, transient_retries):
+        with transaction(self.facade.engine) as connection:
+            checkpoints.save(
+                connection,
+                task,
+                {
+                    "phase": "next",
+                    "engine_id": engine_id,
+                    "used_engines": sorted(used_engines),
+                    "transient_retries": transient_retries,
+                },
+            )
+
+    async def _resume_engine(self, task, config, previous):
+        skill = load_skill(task["skill_id"])
+        async for engine, name in eligible(
+            self.facade.engine,
+            config,
+            skill,
+            injected=self.injected,
+            role=self._engine_role(config, task),
+            preferred=previous,
+            task_id=task["id"],
+        ):
+            with transaction(self.facade.engine) as connection:
+                if state(connection)["paused"] or not slot_available(
+                    connection, config, name, task_id=task["id"]
+                ):
+                    return None, previous
+                reserved = connection.execute(
+                    text(
+                        "UPDATE tasks SET lease_engine_id=:engine WHERE id=:id "
+                        "AND status='running' AND lease_owner=:owner"
+                    ),
+                    {"engine": name, "id": task["id"], "owner": task["lease_owner"]},
+                )
+                if reserved.rowcount:
+                    return engine, name
+        return None, previous
 
     async def _bounded_call(self, engine, engine_id, request, budget, run_id, task, config):
         allowance = min(config.engines.engines[engine_id].max_turns, budget.remaining_turns)
@@ -274,9 +366,10 @@ class Worker:
         finally:
             budget.consume(Usage(duration_s=time.monotonic() - started))
 
-    async def _attempt(self, task, engine, engine_id, config, budget):
+    async def _attempt(self, task, engine, engine_id, config, budget, context):
         run_id = new_id()
         with transaction(self.facade.engine) as connection:
+            checkpoints.clear(connection, task)
             payload = json.loads(
                 connection.execute(
                     text("SELECT payload_json FROM events WHERE id=:id"),
@@ -400,10 +493,10 @@ class Worker:
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
-        self._record_attempt(run_id, task, result, engine_id)
+        self._record_attempt(run_id, task, result, engine_id, context=context)
         return run_id, result
 
-    def _record_attempt(self, run_id, task, result, engine_id):
+    def _record_attempt(self, run_id, task, result, engine_id, *, context=None):
         with transaction(self.facade.engine) as connection:
             receipt = result.receipt
             connection.execute(
@@ -430,6 +523,17 @@ class Worker:
                     "log": result.log_path,
                 },
             )
+            if context is not None:
+                checkpoints.save(
+                    connection,
+                    task,
+                    {
+                        **context,
+                        "phase": "result",
+                        "run_id": run_id,
+                        "result": result.model_dump(mode="json"),
+                    },
+                )
             connection.execute(
                 text("""
                 INSERT INTO cost_ledger(id,task_id,run_id,engine_id,skill_id,mode,input_tokens,
@@ -459,6 +563,8 @@ class Worker:
             receipt = result.receipt
             if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
                 return {"task_id": task["id"], "status": current["status"]}
+            if deferred := checkpoints.defer_if_paused(connection, task):
+                return deferred
             need = (
                 receipt.status in {"failed", "blocked", "needs_human"}
                 or receipt.draft
@@ -539,6 +645,7 @@ class Worker:
                 ),
                 {"id": task["id"]},
             )
+            checkpoints.clear(connection, task)
             return {
                 "task_id": task["id"],
                 "engine": engine_id,
@@ -554,6 +661,8 @@ class Worker:
             )
             if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
                 return {"task_id": task["id"], "status": current["status"]}
+            if deferred := checkpoints.defer_if_paused(connection, task):
+                return deferred
             if current["retry_count"] < config.main.limits.max_retry:
                 next_task = transition(
                     connection,
@@ -576,6 +685,7 @@ class Worker:
                 """),
                     {"id": task["id"], "engine": engine_id},
                 )
+                checkpoints.clear(connection, task)
                 return {
                     "task_id": task["id"],
                     "status": "queued",
@@ -616,6 +726,7 @@ class Worker:
                 ),
                 {"id": task["id"]},
             )
+            checkpoints.clear(connection, task)
             if config.sources.sources.feishu.enabled and config.notify.target.id:
                 request_notification(
                     connection,
@@ -650,6 +761,15 @@ class Worker:
             )
             if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
                 return {"task_id": task["id"], "status": current["status"]}
+            if deferred := checkpoints.defer_if_paused(
+                connection,
+                task,
+                {
+                    "phase": "escalate",
+                    "reason": reason,
+                },
+            ):
+                return deferred
             transition(
                 connection,
                 task["id"],
@@ -680,6 +800,7 @@ class Worker:
                 ),
                 {"id": task["id"]},
             )
+            checkpoints.clear(connection, task)
             if config.sources.sources.feishu.enabled and config.notify.target.id:
                 request_notification(
                     connection, config=config, task_id=task["id"], level=P1, text_=question
