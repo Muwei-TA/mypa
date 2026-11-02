@@ -33,6 +33,18 @@ class LocalCLI:
     def command(self, request):
         raise NotImplementedError
 
+    def turn_limit(self, request):
+        return min(self.config.max_turns, request.max_turns or self.config.max_turns)
+
+    def counters(self, stdout, request):
+        return {}
+
+    def reported_turns(self, counters):
+        value = counters.get("turns")
+        return (
+            value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+        )
+
     async def health(self):
         command = self.config.command
         ok = bool(command) and bool(shutil.which(command[0]))
@@ -47,6 +59,7 @@ class LocalCLI:
         started = time.monotonic()
         log = request.output_dir / "engine.json"
         usage = Usage()
+        turns = None
         try:
             cmd, stdin, env = self.command(request)
             code, stdout, stderr = await run_process(
@@ -62,6 +75,10 @@ class LocalCLI:
                 json.dumps(redact({"exit_code": code, "stdout": stdout, "stderr": stderr}))
             )
             log.chmod(0o600)
+            counters = self.counters(stdout, request)
+            usage.input_tokens = int(counters.get("input_tokens", 0))
+            usage.output_tokens = int(counters.get("output_tokens", 0))
+            turns = self.reported_turns(counters)
             if code or (not stdout.strip() and stderr.strip()):
                 message = (stderr or stdout)[-1000:]
                 return EngineResult(
@@ -70,13 +87,16 @@ class LocalCLI:
                     error=redact(message),
                     error_kind=classify(message),
                     log_path=str(log),
+                    turns=turns,
                 )
             value, counters = self.extract(stdout, request)
             usage.input_tokens = int(counters.get("input_tokens", 0))
             usage.output_tokens = int(counters.get("output_tokens", 0))
             receipt = parse_receipt(value)
             receipt.usage = usage
-            return EngineResult(engine_id=self.id, receipt=receipt, usage=usage, log_path=str(log))
+            return EngineResult(
+                engine_id=self.id, receipt=receipt, usage=usage, log_path=str(log), turns=turns
+            )
         except Exception as exc:
             message = "timeout" if isinstance(exc, TimeoutError) else type(exc).__name__
             usage.duration_s = time.monotonic() - started
@@ -86,6 +106,7 @@ class LocalCLI:
                 error=message,
                 error_kind="transient" if message == "timeout" else "invalid_output",
                 log_path=str(log) if log.exists() else None,
+                turns=turns,
             )
 
     def extract(self, stdout, request):
@@ -116,15 +137,12 @@ class CodexCLI(LocalCLI):
         return cmd + ["-"], request.prompt, {}
 
     def extract(self, stdout, request):
-        counters = {}
         final = None
         for line in stdout.splitlines():
             try:
                 item = json.loads(line)
             except ValueError:
                 continue
-            if item.get("type") == "turn.completed":
-                counters = item.get("usage", {})
             detail = item.get("item", {})
             if detail.get("type") == "agent_message":
                 final = detail.get("text")
@@ -133,7 +151,21 @@ class CodexCLI(LocalCLI):
             final = path.read_text()
             # No unredacted model output remains outside the protected log.
             path.unlink()
-        return final or "", counters
+        return final or "", self.counters(stdout, request)
+
+    def counters(self, stdout, request):
+        # turn.completed is a user turn, not a count of internal model/tool iterations.
+        # Sum usage events but leave model iteration count unknown.
+        counters = {"input_tokens": 0, "output_tokens": 0}
+        for line in stdout.splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if item.get("type") == "turn.completed":
+                for key in counters:
+                    counters[key] += int(item.get("usage", {}).get(key, 0))
+        return counters
 
 
 class HermesCLI(LocalCLI):
@@ -142,6 +174,8 @@ class HermesCLI(LocalCLI):
     def command(self, request):
         cmd = self.config.command + [
             "--ignore-rules",
+            "--max-turns",
+            str(self.turn_limit(request)),
             "--toolsets",
             "clarify",
             "--reasoning",
@@ -155,16 +189,19 @@ class HermesCLI(LocalCLI):
         return (
             cmd + ["-z", request.prompt],
             "",
-            {"HERMES_MAX_ITERATIONS": str(self.config.max_turns)},
+            {"HERMES_MAX_ITERATIONS": str(self.turn_limit(request))},
         )
 
     def extract(self, stdout, request):
+        return stdout, self.counters(stdout, request)
+
+    def counters(self, stdout, request):
         path = request.output_dir / "usage.json"
         counters = json.loads(path.read_text()) if path.exists() else {}
         if path.exists():
             path.write_text(json.dumps(redact(counters)))
             path.chmod(0o600)
-        return stdout, counters
+        return {**counters, "turns": counters.get("api_calls")}
 
 
 class WorkBuddyCLI(LocalCLI):
@@ -182,7 +219,7 @@ class WorkBuddyCLI(LocalCLI):
             '{"mcpServers":{}}',
             "--no-session-persistence",
             "--max-turns",
-            str(self.config.max_turns),
+            str(self.turn_limit(request)),
             "--permission-mode",
             "dontAsk",
         ]
@@ -203,4 +240,11 @@ class WorkBuddyCLI(LocalCLI):
     def extract(self, stdout, request):
         data = json.loads(stdout)
         result = data.get("structured_output") or data.get("result") or data.get("response")
-        return result, data.get("usage", {})
+        return result, self.counters(stdout, request)
+
+    def counters(self, stdout, request):
+        try:
+            data = json.loads(stdout)
+        except ValueError:
+            return {}
+        return {**data.get("usage", {}), "turns": data.get("num_turns")}

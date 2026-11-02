@@ -120,11 +120,22 @@ class Worker:
                 """),
                 {"id": task["id"]},
             ).one()
+            turns, unknown = connection.execute(
+                text(
+                    "SELECT COALESCE(sum(turns_charged),0),COALESCE(max(turns_unknown),0) "
+                    "FROM runs WHERE task_id=:id"
+                ),
+                {"id": task["id"]},
+            ).one()
+        if unknown:
+            return self._escalate_limit(task, "task_turn_usage_unknown", config)
         budget = ExecutionBudget(
             max_tokens=skill.budget.per_task_tokens,
             timeout_s=min(skill.timeout_min, config.main.limits.default_task_timeout_min) * 60,
             tokens=usage[0],
             duration_s=usage[1],
+            max_turns=skill.budget.per_task_turns,
+            turns=turns,
         )
         used_engines = {engine_id}
         transient_retries = 0
@@ -139,7 +150,12 @@ class Worker:
                 return stopped
             if result.error_kind == "cancelled":
                 return {"task_id": task["id"], "status": "cancelled"}
-            if result.error_kind in {"task_token_limit", "task_timeout", "source_read_failed"}:
+            if result.error_kind in {
+                "task_token_limit",
+                "task_timeout",
+                "task_turn_limit",
+                "source_read_failed",
+            }:
                 return self._escalate_limit(task, result.error_kind, config)
             if result.receipt is not None and not result.error:
                 return await self._finalize(task, run_id, result, engine_id, config)
@@ -156,7 +172,35 @@ class Worker:
                     continue
             return self._requeue_or_escalate(task, result, engine_id, config)
 
-    async def _bounded_call(self, engine, engine_id, request, budget):
+    async def _bounded_call(self, engine, engine_id, request, budget, run_id, task, config):
+        allowance = min(config.engines.engines[engine_id].max_turns, budget.remaining_turns)
+        if allowance <= 0:
+            return EngineResult(
+                engine_id=engine_id, error="turn allowance exhausted", error_kind="task_turn_limit"
+            )
+        with transaction(self.facade.engine) as connection:
+            was_estimated = connection.execute(
+                text("SELECT turns_estimated FROM runs WHERE id=:id"), {"id": run_id}
+            ).scalar_one()
+            reservation = connection.execute(
+                text("""
+                UPDATE runs SET turns_charged=turns_charged+:turns,turns_estimated=1
+                WHERE id=:run AND EXISTS (
+                    SELECT 1 FROM tasks WHERE id=:task AND status='running' AND lease_owner=:owner)
+                """),
+                {
+                    "run": run_id,
+                    "turns": allowance,
+                    "task": task["id"],
+                    "owner": task["lease_owner"],
+                },
+            )
+            if not reservation.rowcount:
+                return EngineResult(engine_id=engine_id, error="cancelled", error_kind="cancelled")
+        # Reserve durably before the call. Missing usage, cancellation or a crash
+        # retains the whole allowance instead of resetting it on redispatch.
+        budget.turns += allowance
+        request = request.model_copy(update={"max_turns": allowance})
         started = time.monotonic()
         try:
             async with asyncio.timeout(budget.remaining_s):
@@ -170,6 +214,20 @@ class Worker:
         # Use measured time even when an adapter cannot report usage.
         result.usage.duration_s = max(result.usage.duration_s, time.monotonic() - started)
         budget.consume(result.usage)
+        if result.turns is not None:
+            difference = result.turns - allowance
+            budget.turns += difference
+            with transaction(self.facade.engine) as connection:
+                connection.execute(
+                    text(
+                        "UPDATE runs SET turns_charged=turns_charged+:difference,"
+                        "turns_estimated=:estimated WHERE id=:run"
+                    ),
+                    {"run": run_id, "difference": difference, "estimated": was_estimated},
+                )
+            if result.turns > allowance:
+                result.error = "engine exceeded its requested turn limit"
+                result.error_kind = "task_turn_limit"
         if reason := budget.exhausted:
             result.error = reason
             result.error_kind = reason
@@ -289,7 +347,7 @@ class Worker:
                     result = EngineResult(engine_id=engine_id, error=reason, error_kind=reason)
                 else:
                     running_ref[0] = asyncio.create_task(
-                        self._bounded_call(engine, engine_id, request, budget)
+                        self._bounded_call(engine, engine_id, request, budget, run_id, task, config)
                     )
                     result = await running_ref[0]
                 completed_usage = result.usage.model_copy(deep=True)
@@ -308,7 +366,7 @@ class Worker:
                     )
                     previous = result.usage.model_copy(deep=True)
                     running_ref[0] = asyncio.create_task(
-                        self._bounded_call(engine, engine_id, repair, budget)
+                        self._bounded_call(engine, engine_id, repair, budget, run_id, task, config)
                     )
                     result = await running_ref[0]
                     result.usage = Usage(
@@ -576,6 +634,10 @@ class Worker:
         question = {
             "task_token_limit": "任务累计 token 用量已达上限，需要你接手处理。",
             "task_timeout": "任务累计执行时间已达上限，需要你接手处理。",
+            "task_turn_limit": "任务累计轮数额度已达上限，需要你接手处理。",
+            "task_turn_usage_unknown": (
+                "此任务的历史轮数无法确认。请核实既有运行记录后决定如何继续。"
+            ),
             "source_read_failed": (
                 "无法读取此任务的 URL 原文。请提供可访问的许可域名链接或粘贴原文。"
             ),

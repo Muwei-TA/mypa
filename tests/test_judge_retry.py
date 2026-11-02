@@ -50,7 +50,7 @@ class ScriptedEngine:
 
 
 def failure(kind, engine_id="fake"):
-    return EngineResult(engine_id=engine_id, error="boom", error_kind=kind)
+    return EngineResult(engine_id=engine_id, error="boom", error_kind=kind, turns=1)
 
 
 def test_transient_retries_then_success_without_retry_count(configured, config_dir):

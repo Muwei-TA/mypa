@@ -11,6 +11,12 @@ class ExecutionBudget:
     timeout_s: float
     tokens: int = 0
     duration_s: float = 0
+    max_turns: int = 30
+    turns: int = 0
+
+    @property
+    def remaining_turns(self):
+        return max(0, self.max_turns - self.turns)
 
     @property
     def remaining_s(self):
@@ -22,6 +28,8 @@ class ExecutionBudget:
             return "task_token_limit"
         if self.remaining_s <= 0:
             return "task_timeout"
+        if self.remaining_turns <= 0:
+            return "task_turn_limit"
         return None
 
     def consume(self, usage: Usage):
