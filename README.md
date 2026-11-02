@@ -11,6 +11,8 @@
 已具备的关键能力：
 
 - 本机引擎发现；Codex 与 Hermes 已实调用通过；WorkBuddy 适配器等待 CLI 登录；
+- 派单按 Skill 的 role/ref 和规则角色选择，过滤启用状态、档位、健康、熔断及
+  并发空位；任务租约原子预留引擎槽位，初派与切换均重查；
 - Codex 使用 read-only 模式，WorkBuddy 禁用工具，Hermes 仅开放 clarify；尚未提供容器隔离；
 - 事务性发件箱、发件箱 runner（退避/重试/幂等）与飞书发送 handler；
 - 飞书长连接接收进程与配对；判断层自动重试、故障转移与重派；

@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 from alembic import command
 from pa.common import PAError
 
-SCHEMA_HEAD = "0003_schedules"
+SCHEMA_HEAD = "0004_engine_reservations"
 
 
 def make_engine(path: str | Path) -> Engine:

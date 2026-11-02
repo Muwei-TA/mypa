@@ -10,8 +10,9 @@ from pa.common import PAError, new_id, now
 from pa.config.loader import load
 from pa.config.schema import SEVEN_TAGS
 from pa.engines.base import EngineRequest, EngineResult
-from pa.engines.registry import get_engine
+from pa.engines.selector import eligible, slot_available
 from pa.hub.dispatcher import claim, recover_expired
+from pa.hub.pause import state
 from pa.notify.dispatch import request_notification
 from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
@@ -37,47 +38,76 @@ class Worker:
     async def once(self, engine_id=None):
         config = load(self.config_dir)
         recover_expired(self.facade.engine)
-        hint = self._queue_hint()
-        chosen, chosen_id = await self._select_engine(config, engine_id, hint)
-        task = claim(self.facade.engine, config, chosen_id)
-        if task is None:
-            return None
-        return await self._drive(task, chosen, chosen_id, config)
-
-    def _queue_hint(self):
-        with self.facade.engine.connect() as connection:
-            return connection.execute(
-                text(
-                    "SELECT engine_hint FROM tasks WHERE status='queued' "
-                    "AND skill_id='sample-direct' ORDER BY pinned DESC,priority ASC,"
-                    "manual_rank ASC NULLS LAST,skill_rank ASC,enqueued_at ASC LIMIT 1"
+        for queued in self._queue_candidates():
+            skill = load_skill(queued["skill_id"])
+            role = self._engine_role(config, queued)
+            async for chosen, chosen_id in eligible(
+                self.facade.engine,
+                config,
+                skill,
+                injected=self.injected,
+                role=role,
+                preferred=engine_id,
+                previous=queued["engine_hint"],
+            ):
+                task = claim(
+                    self.facade.engine, config, chosen_id, task_id=queued["id"], skill=skill
                 )
-            ).scalar_one_or_none()
+                if task is not None:
+                    return await self._drive(task, chosen, chosen_id, config)
+        return None
 
-    async def _select_engine(self, config, preferred=None, exclude=None):
-        choices = [preferred] if preferred else list(config.engines.roles.get("dev", []))
-        # A re-dispatch prefers an engine different from the last one used.
-        if not preferred and exclude and exclude in choices:
-            choices = [name for name in choices if name != exclude] + [exclude]
-        for name in choices:
-            try:
-                candidate = self.injected.get(name) or get_engine(config, name)
-            except PAError:
-                continue
-            if (await candidate.health())["installed"]:
-                return candidate, name
-        raise PAError("no enabled, installed CLI engine is configured")
+    def _queue_candidates(self):
+        with self.facade.engine.connect() as connection:
+            if state(connection)["paused"]:
+                return []
+            return (
+                connection.execute(
+                    text(
+                        "SELECT * FROM tasks WHERE status='queued' "
+                        "AND skill_id='sample-direct' ORDER BY pinned DESC,priority ASC,"
+                        "manual_rank ASC NULLS LAST,skill_rank ASC,enqueued_at ASC LIMIT 1"
+                    )
+                )
+                .mappings()
+                .all()
+            )
 
-    async def _another_engine(self, config, used_engines):
-        for name in config.engines.roles.get("dev", []):
-            if name in used_engines:
-                continue
-            try:
-                candidate = self.injected.get(name) or get_engine(config, name)
-            except PAError:
-                continue
-            if (await candidate.health())["installed"]:
-                return candidate, name
+    def _engine_role(self, config, task):
+        mandate = json.loads(task["mandate_json"])
+        return next(
+            (
+                r.engine_role
+                for r in config.rules.rules
+                if r.id in mandate["matched_rules"] and r.engine_role
+            ),
+            None,
+        )
+
+    async def _another_engine(self, config, used_engines, task):
+        skill = load_skill(task["skill_id"])
+        async for candidate, name in eligible(
+            self.facade.engine,
+            config,
+            skill,
+            injected=self.injected,
+            role=self._engine_role(config, task),
+            excluded=used_engines,
+            task_id=task["id"],
+        ):
+            with transaction(self.facade.engine) as connection:
+                if not slot_available(connection, config, name, task_id=task["id"]):
+                    continue
+                reserved = connection.execute(
+                    text(
+                        "UPDATE tasks SET lease_engine_id=:engine WHERE id=:id "
+                        "AND status='running' AND lease_owner=:owner"
+                    ),
+                    {"id": task["id"], "engine": name, "owner": task["lease_owner"]},
+                )
+                if reserved.rowcount:
+                    task["lease_engine_id"] = name
+                    return candidate, name
         return None, None
 
     async def _drive(self, task, engine, engine_id, config):
@@ -119,7 +149,7 @@ class Worker:
                 await self._backoff(transient_retries)
                 continue
             if kind in ("auth", "quota", "invalid_output"):
-                next_engine, next_id = await self._another_engine(config, used_engines)
+                next_engine, next_id = await self._another_engine(config, used_engines, task)
                 if next_engine is not None:
                     engine, engine_id = next_engine, next_id
                     used_engines.add(engine_id)
@@ -445,7 +475,10 @@ class Worker:
                     text_=summary,
                 )
             connection.execute(
-                text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
+                text(
+                    "UPDATE tasks SET lease_owner=NULL,lease_until=NULL,lease_engine_id=NULL "
+                    "WHERE id=:id"
+                ),
                 {"id": task["id"]},
             )
             return {
@@ -481,7 +514,7 @@ class Worker:
                 connection.execute(
                     text("""
                     UPDATE tasks SET retry_count=retry_count + 1, engine_hint=:engine,
-                      lease_owner=NULL, lease_until=NULL WHERE id=:id
+                      lease_owner=NULL, lease_until=NULL,lease_engine_id=NULL WHERE id=:id
                 """),
                     {"id": task["id"], "engine": engine_id},
                 )
@@ -519,7 +552,10 @@ class Worker:
                 },
             )
             connection.execute(
-                text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
+                text(
+                    "UPDATE tasks SET lease_owner=NULL,lease_until=NULL,lease_engine_id=NULL "
+                    "WHERE id=:id"
+                ),
                 {"id": task["id"]},
             )
             if config.sources.sources.feishu.enabled and config.notify.target.id:
@@ -576,7 +612,10 @@ class Worker:
                 },
             )
             connection.execute(
-                text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
+                text(
+                    "UPDATE tasks SET lease_owner=NULL,lease_until=NULL,lease_engine_id=NULL "
+                    "WHERE id=:id"
+                ),
                 {"id": task["id"]},
             )
             if config.sources.sources.feishu.enabled and config.notify.target.id:
