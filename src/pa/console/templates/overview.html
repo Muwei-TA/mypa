@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>总览 <small>只显示等你处理的事项</small></h1>
+
+{% for problem in data.problems %}
+<div class="problem-box">{{ problem.kind }}: {{ problem.detail }}</div>
+{% endfor %}
+
+{% if data['items'] %}
+<table class="waitlist">
+  <thead><tr><th>阶段</th><th>事项</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for item in data['items'] %}
+  <tr>
+    <td>{{ stage_label(item.stage) }}</td>
+    <td>
+      {% if item.summary %}{{ item.summary }}{% else %}{{ item.task_id }}{% endif %}
+      {% if item.question %}<div class="sub">{{ item.question }}</div>{% endif %}
+    </td>
+    <td>
+      {% if item.action == "answer" %}
+        <a class="btn" href="/console/decisions-page">去回答</a>
+      {% elif item.action == "review_pr" %}
+        <a class="btn" href="/console/tasks-page/{{ item.task_id }}">审查 PR</a>
+      {% elif item.action == "retry_or_drop" %}
+        <a class="btn" href="/console/tasks-page/{{ item.task_id }}">处理投递</a>
+      {% else %}
+        <a class="btn" href="/console/tasks-page/{{ item.task_id }}">查看</a>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>没有等你处理的事项。</p>
+{% endif %}
+
+<p class="counts">等待中：{{ data.total_waiting }}（等你回答 {{ data.counts.get('owner/answer', 0) }}、审查 {{ data.counts.get('owner/review', 0) }}、受阻 {{ data.counts.get('owner/blocked_failed', 0) }}、投递 {{ data.counts.get('owner/delivery', 0) }}）</p>
+{% endblock %}

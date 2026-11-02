@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>任务 {{ task.id }}</h1>
+
+<section>
+  <h2>状态时间线</h2>
+  <table class="waitlist">
+    <thead><tr><th>时间</th><th>从</th><th>到</th><th>原因</th></tr></thead>
+    <tbody>
+    {% for row in timeline %}
+    <tr>
+      <td>{{ row.at }}</td>
+      <td>{{ row.from_status or "—" }}</td>
+      <td>{{ row.to_status or "—" }}</td>
+      <td>{{ row.reasons }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>运行记录</h2>
+  {% for run in runs %}
+  <div class="card">
+    <div>第 {{ run.attempt }} 次 · {{ run.engine_id }} · {{ run.outcome }}</div>
+    <div class="sub">回执：{{ run.receipt_json or "（无）" }}</div>
+  </div>
+  {% else %}<p>暂无运行。</p>{% endfor %}
+</section>
+
+<section>
+  <h2>PR / 审查 / CI</h2>
+  {% for pr in pull_requests %}
+  <div class="card">
+    <div><a href="{{ pr.url }}" rel="noopener">{{ pr.repo }}#{{ pr.number }}</a> · {{ pr.ci_stage }} · 风险 {{ pr.risk_final or "未定" }}</div>
+  </div>
+  {% else %}<p>暂无 PR。</p>{% endfor %}
+</section>
+
+<section>
+  <h2>决定</h2>
+  {% for decision in decisions %}
+  <div class="card">
+    <div>{{ decision.question }}</div>
+    <div class="sub">{{ decision.status }}{% if decision.answer %} → {{ decision.answer }}{% endif %}</div>
+  </div>
+  {% else %}<p>暂无决定。</p>{% endfor %}
+</section>
+
+<section>
+  <h2>成本</h2>
+  {% for row in costs %}
+  <div class="sub">{{ row.mode }}: {{ row.cost_cny }} CNY (in {{ row.input_tokens }} / out {{ row.output_tokens }})</div>
+  {% else %}<p>暂无成本记录。</p>{% endfor %}
+</section>
+{% endblock %}

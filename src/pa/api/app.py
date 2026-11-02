@@ -485,7 +485,20 @@ def create_app(
 
     app.include_router(router)
     if login_service is not None:
+        from pathlib import Path as _Path
+
+        from fastapi.staticfiles import StaticFiles
+
+        from pa.console.pages import build_pages_router
         from pa.console.routes import build_console_router
 
+        static_dir = _Path(__file__).resolve().parent.parent / "console" / "static"
+        if static_dir.exists():
+            app.mount(
+                "/console/static",
+                StaticFiles(directory=str(static_dir)),
+                name="console-static",
+            )
+        app.include_router(build_pages_router(login_service, facade))
         app.include_router(build_console_router(login_service, facade))
     return app

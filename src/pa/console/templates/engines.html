@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>引擎</h1>
+<table class="waitlist">
+  <thead><tr><th>引擎</th><th>状态</th><th>熔断</th><th>最近成功</th><th>最近错误</th></tr></thead>
+  <tbody>
+  {% for e in engines %}
+  <tr>
+    <td>{{ e.engine_id }}</td>
+    <td>{{ e.status }}</td>
+    <td>{{ e.breaker_state or "closed" }}</td>
+    <td>{{ e.last_ok_at or "—" }}</td>
+    <td>{{ e.last_err or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5">暂无引擎健康记录。</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

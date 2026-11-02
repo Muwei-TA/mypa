@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>队列 <small>按实际执行顺序</small></h1>
+<table class="waitlist" id="queue-table">
+  <thead><tr><th>#</th><th>任务</th><th>Skill</th><th>状态</th><th>优先级</th><th>置顶</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for task in tasks['items'] %}
+  <tr data-task-id="{{ task.id }}">
+    <td>{{ loop.index }}</td>
+    <td><a href="/console/tasks-page/{{ task.id }}">{{ task.id }}</a></td>
+    <td>{{ task.skill_id }}</td>
+    <td>{{ task.status }}</td>
+    <td>{{ task.priority }}</td>
+    <td>{{ "是" if task.pinned else "否" }}</td>
+    <td>
+      <button class="btn act-cancel" data-id="{{ task.id }}" data-confirm="确认取消任务 {{ task.id }}？">取消</button>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

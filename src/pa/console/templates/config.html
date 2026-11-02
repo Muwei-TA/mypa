@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>配置 <small>在线编辑，带版本链与回滚</small></h1>
+<nav class="tabs">
+  {% for name in ["pa.yaml", "rules.yaml", "engines.yaml", "principals.yaml", "sources.yaml", "notify.yaml", "schedules.yaml", "merge_policy.yaml"] %}
+  <a class="tab {% if name == file_name %}active{% endif %}" href="/console/config-page?file_name={{ name }}">{{ name }}</a>
+  {% endfor %}
+</nav>
+<form id="config-form" data-file="{{ file_name }}">
+  <textarea name="content" rows="20" spellcheck="false">{{ content }}</textarea>
+  <div class="row">
+    <button type="button" class="btn act-config-validate">校验</button>
+    <button type="button" class="btn act-config-save" data-confirm="确认保存 {{ file_name }}？冲突时会返回 409。">保存</button>
+    <span class="hint" id="config-hint"></span>
+  </div>
+</form>
+
+<section>
+  <h2>版本历史</h2>
+  <table class="waitlist">
+    <thead><tr><th>版本</th><th>时间</th><th>来源</th><th>操作人</th></tr></thead>
+    <tbody>
+    {% for v in versions %}
+    <tr><td>{{ v.revision }}</td><td>{{ v.at }}</td><td>{{ v.origin }}</td><td>{{ v.actor }}</td></tr>
+    {% else %}
+    <tr><td colspan="4">暂无版本记录。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

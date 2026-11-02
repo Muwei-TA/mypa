@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>审计流水</h1>
+<table class="waitlist">
+  <thead><tr><th>时间</th><th>操作人</th><th>动作</th></tr></thead>
+  <tbody>
+  {% for row in items['items'] %}
+  <tr>
+    <td>{{ row.at }}</td>
+    <td>{{ row.actor }}</td>
+    <td>{{ row.action }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="3">暂无审计记录。</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
