@@ -62,6 +62,9 @@ class Client:
         json_body: dict | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
+        # v1.1·D17: merges only ever run under the merger identity.
+        if identity == "agent" and method in ("PUT", "POST") and path.endswith("/merge"):
+            raise ScmError("agent identity must not merge (D17)", "permanent")
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30)
         ident = self.identity(identity)
