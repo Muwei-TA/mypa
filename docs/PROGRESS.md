@@ -4,14 +4,13 @@
 本表记录当前证据，不用测试数量或单批提交代替整阶段验收。
 开发分支 `codex/continue-development`；每个可复核批次提交并推送。
 用户指示：无法本地验证的项暂留待后续验证，其余计划持续开发到完成。
-整体 M1–M2 已完成（外部依赖项暂留）；M3/M4/M5 待办继续保留。
+整体 M1–M3 已完成（外部依赖项暂留）；M4/M5 待办继续保留。
 
 ## 当前优先级
 
-1. M3 控制台（11 项）：按角色 Facade、REST、配置版本、登录、视图与页面。
-2. M4 桌面引擎（8 项）：macOS 依赖项按指示标注暂留，逻辑层先行。
-3. M5 加固（14 项）：容器、记忆向量、预算、熔断、备份等。
-4. 暂留项：真实飞书投递、真实 launchd、真实模型 URL 摘要、真实 GitHub/Gitea
+1. M4 桌面引擎（8 项）：macOS 依赖项按指示标注暂留，逻辑层先行。
+2. M5 加固（14 项）：容器、记忆向量、预算、熔断、备份等。
+3. 暂留项：真实飞书投递、真实 launchd、真实模型 URL 摘要、真实 GitHub/Gitea
    API 联调（E2E-05/07/09/10）、Mac mini 外部证据。
 
 ## M1 验收清单
@@ -59,7 +58,23 @@ M2 已完成（21 项中 17 项本地验证；外部依赖项暂留）：
 | M2-20 | `skills/assets/sample-code/`：skill.yaml + prompt.md（真实平台闭环属 E2E-05，暂留） |
 | M2-21 | E2E-06（三轮退回升级卡片）/ E2E-08（先例勾选免二次卡片）本地闭环通过；E2E-05/07/09/10 需真实平台，暂留 |
 
-M3（11 项）、M4（8 项）、M5（14 项）按开发资料包继续，当前尚未验收。
+M3 已完成（11 项中 9 项本地验证；浏览器拖拽交互与 SortableJS 静态资源本地化待部署实测，端点层已验证）：
+
+| ID | 当前证据 |
+|---|---|
+| M3-01 | `store/roles.py`：Agent/Executor/Hub/Settings Facade，D21 结构护栏（AGENT_FORBIDDEN_ATTRS 测试覆盖） |
+| M3-02 | `api/app.py` REST 面：owner/agent 双令牌，写端点 require_owner + audit_log，读端点 require_agent |
+| M3-03 | `config/versions.py`：base_revision 409 冲突、同内容无操作、版本链 + git 提交、drop_same_as_default |
+| M3-04 | `console/auth.py` + `console/routes.py`：TOTP RFC 6238、PBKDF2、签名 Cookie（HttpOnly/SameSite=strict）、CSRF 派生；/console/login 等会话路由 + 页面守卫 |
+| M3-05 | `alembic 0007_task_stage_view`：7 阶段 first-match-wins 视图 |
+| M3-06 | `console/reasons.py`：约 30 原因码中文翻译 + stage_label 七桶 |
+| M3-07 | `console/overview.py`：只显示 owner/* 四类等待项 + 系统问题 + counts（数字=列表条数） |
+| M3-08 | `/skills:reorder`、`/rules:reorder` 端点 + `reorder_rules`（rules.yaml 写回 + 审计）；SortableJS 页面交互待部署实测 |
+| M3-09 | `console/pages.py` + 11 个 Jinja2 模板：总览/队列/任务详情/决定/引擎/观察/成本/配置/审计/搜索/登录；破坏性操作 data-confirm 二次确认 |
+| M3-10 | `console/search.py` + `/api/v1/search`：文本/ID/#ref/URL 四形态检索事件、线程、任务 |
+| M3-11 | `console/testing.py` dry_run_rules/dry_run_skill + `POST /rules:test`、`POST /skills/{id}:test`、`pa rule test`、`pa skill test`（只返回命中，不执行） |
+
+M4（8 项）、M5（14 项）按开发资料包继续，当前尚未验收。
 远期 F-01–03 保持 PRD 定义的预留范围。
 
 ## 本批验证
@@ -90,3 +105,12 @@ M3（11 项）、M4（8 项）、M5（14 项）按开发资料包继续，当前
 - M2 批4（工具注册/MCP/sample-code/E2E 隔离）：`test_tools_and_sample_code.py` 15 项、
   `tests/e2e/test_m2_e2e.py` 2 项；单元全量 440 项，E2E 6 项（含 M1 的 4 项），
   Ruff 通过。
+- M3 批1~3（角色 Facade/REST/配置版本/task_stage/原因码）：`test_console_core.py`
+  16 项、`test_config_versions.py` 7 项、`test_api_resources.py` 12 项；全量 475 项。
+- M3 批4（登录/总览）：`test_console_auth_overview.py` 10 项、`test_console_routes.py`
+  8 项；全量 491 项；修复 _new_session 与 verify_session 的 CSRF 派生不一致。
+- M3 批5（排序/搜索/干跑）：`test_reorder_search_testing.py` 9 项；全量 500 项。
+- M3 批6（页面模板）：`test_console_pages.py` 8 项；全量 508 项，Ruff 通过。
+  模板 `dict.items` 与 Jinja2 方法冲突已改用中括号访问。
+- M3 期间新增端点全部走 owner/agent 双令牌测试；agent 令牌对 reorder 与
+  decisions:answer 返回 403 已有断言。
