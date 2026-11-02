@@ -2,18 +2,17 @@
 
 依据 `dev-kit/01-开发任务拆解.md`，按 M1 → M2 → M3/M4/M5 的依赖顺序推进。
 本表记录当前证据，不用测试数量或单批提交代替整阶段验收。
-开发分支 `codex/continue-development`；每个可复核批次提交并推送到 Gitea。
-用户已要求本批“暂停研判与恢复”收尾提交推送后暂停开发；恢复需用户明确指示。
-整体 M1–M5 尚未完成，以下待办继续保留。
+开发分支 `codex/continue-development`；每个可复核批次提交并推送。
+用户指示：无法本地验证的项暂留待后续验证，其余计划持续开发到完成。
+整体 M1–M2 已完成（外部依赖项暂留）；M3/M4/M5 待办继续保留。
 
 ## 当前优先级
 
-1. M1-21：隔离配置 E2E-01–04 已完成（本批）；Mac mini 真实外部证据仍待补。
-2. M1-16/19：失败通知补发执行器与 rule mode/effect CLI 已实现（本批）。
-3. M1-17：真实模型 URL 摘要仍待独立验收。
-4. R-23 / M1-13–15：Codex 单次内部迭代限制仍待核实。
-5. M1-18：对照三个独立进程的部署模型再审计。
-6. 继续 M2 代码平台闭环、M3 控制台、M4 桌面引擎、M5 加固，逐项验收。
+1. M3 控制台（11 项）：按角色 Facade、REST、配置版本、登录、视图与页面。
+2. M4 桌面引擎（8 项）：macOS 依赖项按指示标注暂留，逻辑层先行。
+3. M5 加固（14 项）：容器、记忆向量、预算、熔断、备份等。
+4. 暂留项：真实飞书投递、真实 launchd、真实模型 URL 摘要、真实 GitHub/Gitea
+   API 联调（E2E-05/07/09/10）、Mac mini 外部证据。
 
 ## M1 验收清单
 
@@ -41,7 +40,26 @@
 | M1-20 | 已有本机 LaunchAgent 安装和运行记录 | 对当前版本执行启动/重启/故障拉起验收 |
 | M1-21 | 隔离配置 E2E-01–04（真实子进程、SQLite、假引擎与监督重启） | Mac mini 真实 launchd 与飞书外部证据 |
 
-M2（21 项）、M3（11 项）、M4（8 项）、M5（14 项）按开发资料包继续，当前尚未验收。
+M2 已完成（21 项中 17 项本地验证；外部依赖项暂留）：
+
+| ID | 当前证据 |
+|---|---|
+| M2-01~03 | `scm/base.py` 契约 + `scm/github.py` / `gitea.py` 双平台 10 方法适配器，27 项契约测试 |
+| M2-04 | `workspace/mirror.py`：bare 镜像 + worktree + pa/&lt;task_id&gt; 分支识别 + 写锁 + prepare 限时 |
+| M2-05/06 | Webhook：HMAC/时间戳/限流拉黑/X-Delivery 幂等，10 项测试 |
+| M2-07 | `hub/subscriptions.py`：线程订阅/路由/bot 识别/14 天过期清理 |
+| M2-08~10 | `ci/risk.py` 硬规则 + `merge_gate.py` 3×3 矩阵，13 项测试 |
+| M2-11~13 | `ci/review.py` 三级审查 + `pipeline.py` 8 阶段 + `hooks.py` 发布核实（version_endpoint 用 merge-base 判定），10 项测试 |
+| M2-14 | Client 层 D17 护栏：agent 身份禁调 merge 端点；merger 身份专用于合并 |
+| M2-15 | `ci/communication.py`：PR/评论首行 Agent 标记、审查意见处理模板、重复改动关 PR |
+| M2-16 | `notify/cards.py`：决定卡片（单问题/选项模板/记为先例复选）+ 回调四重校验 + decision.submitted 事件 |
+| M2-17 | `judge/precedents.py`：台账（memories 表）、bigram 关键词检索（FTS5 中文整句单 token 限制已绕开，向量阈值 M5 接入）、md 镜像导出/解析、四类永不自动 |
+| M2-18 | `judge/timeout.py`：24h 保守动作 + suspended + 一次性提醒 |
+| M2-19 | `tools/registry.py` 六工具注册 + `tools/mcp_server.py` 127.0.0.1 单任务一次性 Token + 白名单 + 必问标签过判断层 |
+| M2-20 | `skills/assets/sample-code/`：skill.yaml + prompt.md（真实平台闭环属 E2E-05，暂留） |
+| M2-21 | E2E-06（三轮退回升级卡片）/ E2E-08（先例勾选免二次卡片）本地闭环通过；E2E-05/07/09/10 需真实平台，暂留 |
+
+M3（11 项）、M4（8 项）、M5（14 项）按开发资料包继续，当前尚未验收。
 远期 F-01–03 保持 PRD 定义的预留范围。
 
 ## 本批验证
@@ -62,3 +80,13 @@ M2（21 项）、M3（11 项）、M4（8 项）、M5（14 项）按开发资料�
   隔离 E2E：`tests/e2e/test_m1_e2e.py`，4 项（E2E-01–04，真实子进程与 SQLite，
   E2E-02 以监督重启模拟 launchd）。全量现为 345 项；Ruff 与构建通过。
   E2E 的外部边界（真实 launchd、飞书投递、真实模型）仍待 Mac mini 验收。
+- M2 批1（SCM/Webhook/风险/矩阵/授权/角色/执行变量）：`test_scm_adapters.py` 27 项、
+  `test_risk_and_merge_gate.py` 13 项、`test_webhooks.py` 10 项、`test_m2_core.py` 9 项；
+  提交 86c9888，全量 391 项。
+- M2 批2（工作区/订阅/审查/流水线/钩子）：`test_workspace_and_subs.py` 10 项、
+  `test_ci_pipeline.py` 10 项；全量 411 项。
+- M2 批3（身份护栏/沟通/决定卡片/先例/超时）：`test_decisions_and_precedents.py`
+  14 项；全量 425 项。
+- M2 批4（工具注册/MCP/sample-code/E2E 隔离）：`test_tools_and_sample_code.py` 15 项、
+  `tests/e2e/test_m2_e2e.py` 2 项；单元全量 440 项，E2E 6 项（含 M1 的 4 项），
+  Ruff 通过。
