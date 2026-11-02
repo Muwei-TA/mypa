@@ -1,6 +1,7 @@
 import asyncio
 import json
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
@@ -14,6 +15,8 @@ from pa.hub.dispatcher import claim, recover_expired
 from pa.notify.dispatch import request_notification
 from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
+from pa.skills.limits import ExecutionBudget
+from pa.skills.loader import load_skill
 from pa.skills.prompt_assembly import assemble
 from pa.skills.receipt import Usage
 from pa.store.db import transaction
@@ -76,17 +79,36 @@ class Worker:
         return None, None
 
     async def _drive(self, task, engine, engine_id, config):
+        skill = load_skill(task["skill_id"])
+        with self.facade.engine.connect() as connection:
+            usage = connection.execute(
+                text("""
+                SELECT COALESCE(sum(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)),0),
+                  COALESCE(sum(duration_s),0) FROM cost_ledger WHERE task_id=:id
+                """),
+                {"id": task["id"]},
+            ).one()
+        budget = ExecutionBudget(
+            max_tokens=skill.budget.per_task_tokens,
+            timeout_s=min(skill.timeout_min, config.main.limits.default_task_timeout_min) * 60,
+            tokens=usage[0],
+            duration_s=usage[1],
+        )
         used_engines = {engine_id}
         transient_retries = 0
         max_transient = config.main.limits.transient_retries
         while True:
             if stopped := self._stopped(task):
                 return stopped
-            run_id, result = await self._attempt(task, engine, engine_id, config)
+            if reason := budget.exhausted:
+                return self._escalate_limit(task, reason, config)
+            run_id, result = await self._attempt(task, engine, engine_id, config, budget)
             if stopped := self._stopped(task):
                 return stopped
             if result.error_kind == "cancelled":
                 return {"task_id": task["id"], "status": "cancelled"}
+            if result.error_kind in {"task_token_limit", "task_timeout"}:
+                return self._escalate_limit(task, result.error_kind, config)
             if result.receipt is not None and not result.error:
                 return await self._finalize(task, run_id, result, engine_id, config)
             kind = result.error_kind
@@ -102,7 +124,26 @@ class Worker:
                     continue
             return self._requeue_or_escalate(task, result, engine_id, config)
 
-    async def _attempt(self, task, engine, engine_id, config):
+    async def _bounded_call(self, engine, engine_id, request, budget):
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(budget.remaining_s):
+                result = (await engine.run(request)).model_copy(deep=True)
+        except TimeoutError:
+            result = EngineResult(
+                engine_id=engine_id,
+                error="task execution time exhausted",
+                error_kind="task_timeout",
+            )
+        # Use measured time even when an adapter cannot report usage.
+        result.usage.duration_s = max(result.usage.duration_s, time.monotonic() - started)
+        budget.consume(result.usage)
+        if reason := budget.exhausted:
+            result.error = reason
+            result.error_kind = reason
+        return result
+
+    async def _attempt(self, task, engine, engine_id, config, budget):
         run_id = new_id()
         with transaction(self.facade.engine) as connection:
             payload = json.loads(
@@ -154,11 +195,14 @@ class Worker:
                 error_kind="fatal",
             )
         else:
-            running = asyncio.create_task(engine.run(request))
+            started = time.monotonic()
+            completed_usage = Usage()
+            running = asyncio.create_task(self._bounded_call(engine, engine_id, request, budget))
             running_ref = [running]
             heartbeat = asyncio.create_task(self._heartbeat(task, running_ref))
             try:
                 result = await running
+                completed_usage = result.usage.model_copy(deep=True)
                 if result.error_kind == "invalid_output" and not self._stopped(task):
                     # PRD §8.3: one same-engine correction before switching engines.
                     repair = request.model_copy(
@@ -173,7 +217,9 @@ class Worker:
                         }
                     )
                     previous = result.usage.model_copy(deep=True)
-                    running_ref[0] = asyncio.create_task(engine.run(repair))
+                    running_ref[0] = asyncio.create_task(
+                        self._bounded_call(engine, engine_id, repair, budget)
+                    )
                     result = await running_ref[0]
                     result.usage = Usage(
                         input_tokens=previous.input_tokens + result.usage.input_tokens,
@@ -183,16 +229,21 @@ class Worker:
                     if result.receipt:
                         result.receipt.usage = result.usage
             except asyncio.CancelledError:
-                with transaction(self.facade.engine) as connection:
-                    connection.execute(
-                        text("UPDATE runs SET ended_at=:at, outcome='cancelled' WHERE id=:id"),
-                        {"id": run_id, "at": now()},
-                    )
+                # Preserve completed calls (including a failed receipt before repair)
+                # and elapsed time when shutdown or owner cancellation interrupts us.
+                completed_usage.duration_s = max(
+                    completed_usage.duration_s, time.monotonic() - started
+                )
+                cancelled = EngineResult(
+                    engine_id=engine_id,
+                    error="cancelled",
+                    error_kind="cancelled",
+                    usage=completed_usage,
+                )
+                self._record_attempt(run_id, task, cancelled, engine_id)
                 if asyncio.current_task().cancelling():
                     raise
-                return run_id, EngineResult(
-                    engine_id=engine_id, error="cancelled", error_kind="cancelled"
-                )
+                return run_id, cancelled
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
@@ -210,7 +261,13 @@ class Worker:
                 {
                     "id": run_id,
                     "at": now(),
-                    "outcome": receipt.status if receipt else "failed",
+                    "outcome": (
+                        "cancelled"
+                        if result.error_kind == "cancelled"
+                        else receipt.status
+                        if receipt and not result.error
+                        else "failed"
+                    ),
                     "error": result.error_kind,
                     "receipt": json.dumps(
                         redact(receipt.model_dump(mode="json", exclude_none=True))
@@ -256,7 +313,6 @@ class Worker:
                 or receipt.risk != "low"
                 or receipt.confidence < config.main.human_gate.confidence_below
                 or bool(set(receipt.tags) & SEVEN_TAGS)
-                or receipt.usage.input_tokens + receipt.usage.output_tokens > 200_000
             )
             dropped = receipt.status == "dropped"
             status = "awaiting_decision" if need and not dropped else "succeeded"
@@ -414,6 +470,53 @@ class Worker:
                 "status": next_task["status"],
                 "reason": "retry_exhausted",
             }
+
+    def _escalate_limit(self, task, reason, config):
+        question = (
+            "任务累计 token 用量已达上限，需要你接手处理。"
+            if reason == "task_token_limit"
+            else "任务累计执行时间已达上限，需要你接手处理。"
+        )
+        with transaction(self.facade.engine) as connection:
+            current = (
+                connection.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                .mappings()
+                .one()
+            )
+            if current["status"] != "running" or current["lease_owner"] != task["lease_owner"]:
+                return {"task_id": task["id"], "status": current["status"]}
+            transition(
+                connection,
+                task["id"],
+                "awaiting_decision",
+                current["version"],
+                [Reason(code=reason)],
+            )
+            connection.execute(
+                text("""
+                INSERT INTO decisions(id,task_id,kind,question,nonce,status,expires_at,reason_json)
+                VALUES(:id,:task,'task',:question,:nonce,'pending',:expires,:reason)
+                """),
+                {
+                    "id": new_id(),
+                    "task": task["id"],
+                    "question": question,
+                    "nonce": secrets.token_urlsafe(24),
+                    "expires": (
+                        datetime.now(UTC) + timedelta(hours=config.main.limits.decision_timeout_h)
+                    ).isoformat(),
+                    "reason": json.dumps([{"code": reason}]),
+                },
+            )
+            connection.execute(
+                text("UPDATE tasks SET lease_owner=NULL,lease_until=NULL WHERE id=:id"),
+                {"id": task["id"]},
+            )
+            if config.sources.sources.feishu.enabled and config.notify.target.id:
+                request_notification(
+                    connection, config=config, task_id=task["id"], level=P1, text_=question
+                )
+        return {"task_id": task["id"], "status": "awaiting_decision", "reason": reason}
 
     def _stopped(self, task):
         with self.facade.engine.connect() as connection:

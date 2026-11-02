@@ -1,5 +1,24 @@
 # 开发记录
 
+## 2026-11-02（新工作区继续 M1：累计执行限制）
+
+- 从 Gitea `muwei/pa` 的 `45165f1` 拉取到
+  `/Users/weimu/Documents/ChatGPT/pa`，分支 `codex/continue-development`。
+- 复现最后一次回执检查遗漏此前失败调用用量的问题，9 项新增回归修复前失败。
+- worker 从 `cost_ledger` 恢复任务累计用量，读取 Skill 的 `per_task_tokens`，
+  执行时长取 Skill `timeout_min` 与全局 `default_task_timeout_min` 较小值。
+  重试、同引擎修正、故障转移和新 worker 重派共用额度。
+- 达到 token 或时长上限后直接转 `awaiting_decision`，在同一事务内释放租约、
+  写入决定与 P1 通知；不继续重试。超时通过异步取消触发 CLI 子进程清理。
+- 正常关闭或取消时，保存已完成调用的 token 和已消耗时长，包含修正回执前的失败调用。
+- 新增 13 项行为测试，覆盖累计额度、修正与故障转移、重派持久化、边界值、
+  正常结案、修正中关闭恢复和真实子进程超时回收。
+- 全量 **245 项测试通过**，Ruff 检查与格式校验通过，sdist/wheel 构建成功；
+  原有 Starlette TestClient 弃用提示仍保留，不影响断言。
+- 边界：token 依据调用结束时引擎报告值，不是流式硬截断；尚不能还原强杀或
+  引擎未报告的 token。执行时间只累计调用时间，不含排队及退避；累计轮数待办。
+  未变更本机 Application Support 中的正式运行环境。
+
 ## 2026-11-02（评审后的运行时开发）
 
 - worker、发件箱和接收进程监控改为独立异步循环，长模型调用不会拖住已入库的通知。
