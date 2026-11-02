@@ -19,6 +19,8 @@
 - 通知 P0–P3 分级、P2 十分钟合并窗口、飞书连续不可用 15 分钟后的 macOS
   `osascript` 本地兜底与待补发标记；
 - 任务/技能排序值维护（置顶、优先级、移动、重编号）；
+- [持久化定时事件](docs/schedules.md)：APScheduler + SQLite，重启补接、原触发时间去重、
+  配置同步与启停，事件仍经过规则与 observe/auto 准入；
 - Skill 包内资产与加载器：`sample-direct` 的 `skill.yaml`/`prompt.md`（Jinja2）
   经 Pydantic 校验并驱动提示词组装，完成文本摘要与结案；URL 当前仅作为文本输入；
 - REST 基础接口（FastAPI + Uvicorn，绑定 127.0.0.1）：`/healthz`、`/api/v1/health`、
@@ -26,9 +28,10 @@
   私有接口强制 Bearer 校验；经 `python -m pa.procs.server <config-dir>` 启动，
   启动前需通过 `pa secret set secret://keychain/pa/api_owner_token` 配置 owner 令牌。
 
-**尚未实施**：真实 URL 抓取、定时调度、豆包 GUI 执行、完整 REST 与角色权限面（M3）、
+**尚未实施**：真实 URL 抓取、豆包 GUI 执行、完整 REST 与角色权限面（M3）、
 代码平台闭环（M2）及容器隔离。不能视为完整 M1 已验收。
 分项进度和 [评审记录](docs/reviews/2026-11-02-m1.md) 中列出了验证边界。
+后续任务及逐项验收依据见 [开发进度表](docs/PROGRESS.md)。
 
 累计 token 依据引擎已报告用量检查，在调用结束后及下一次调用前生效；尚不支持
 流式 token 硬截断，也无法还原被强杀或未报告的 token。执行时间累计已记账的引擎

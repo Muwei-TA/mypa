@@ -4,7 +4,7 @@ from pa.ingress.base import Event
 
 
 class CronAdapter:
-    """Normalize a scheduler tick. Scheduling itself is not implemented in this increment."""
+    """Normalize a tick using its planned time, including delivery after a restart."""
 
     name = "cron"
 
@@ -22,6 +22,6 @@ class CronAdapter:
             addressed=False,
             received_at=datetime.now(UTC),
             dedup_key=f"{request['id']}:{slot}",
-            summary=request.get("summary", request["id"]),
+            summary=request.get("summary", request["id"])[:80],
             payload=request.get("payload", {}),
         )

@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SEVEN_TAGS = frozenset(
@@ -118,6 +120,15 @@ class PAConfig(Model):
     human_gate: HumanGate = Field(default_factory=HumanGate)
     defaults: Defaults = Field(default_factory=Defaults)
     console: Console = Field(default_factory=Console)
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value):
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError("unknown timezone") from None
+        return value
 
     def data_path(self, config_dir: Path) -> Path:
         path = Path(self.data_dir).expanduser()
@@ -242,6 +253,31 @@ class NotifyConfig(Model):
     target: NotifyTarget = Field(default_factory=NotifyTarget)
 
 
+class Schedule(Model):
+    id: str = Field(min_length=1, max_length=80)
+    cron: str
+    event_type: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+    @field_validator("cron")
+    @classmethod
+    def valid_cron(cls, value):
+        CronTrigger.from_crontab(value, timezone="UTC")
+        return value
+
+
+class SchedulesConfig(Model):
+    schedules: list[Schedule] = Field(default_factory=list)
+
+    @field_validator("schedules")
+    @classmethod
+    def unique_ids(cls, value):
+        if len({s.id for s in value}) != len(value):
+            raise ValueError("duplicate schedule id")
+        return value
+
+
 CONFIG_MODELS: dict[str, type[Model]] = {
     "pa.yaml": PAConfig,
     "rules.yaml": RulesConfig,
@@ -249,8 +285,9 @@ CONFIG_MODELS: dict[str, type[Model]] = {
     "engines.yaml": EnginesConfig,
     "sources.yaml": SourcesConfig,
     "notify.yaml": NotifyConfig,
+    "schedules.yaml": SchedulesConfig,
 }
-OPTIONAL_CONFIGS = {"engines.yaml", "sources.yaml", "notify.yaml"}
+OPTIONAL_CONFIGS = {"engines.yaml", "sources.yaml", "notify.yaml", "schedules.yaml"}
 
 
 class LoadedConfig(Model):
@@ -260,5 +297,6 @@ class LoadedConfig(Model):
     engines: EnginesConfig = Field(default_factory=EnginesConfig)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    schedules: SchedulesConfig = Field(default_factory=SchedulesConfig)
     policy_version: str
     raw: dict[str, Any]

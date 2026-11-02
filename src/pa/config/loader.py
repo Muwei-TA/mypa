@@ -91,6 +91,7 @@ def load(config_dir: Path) -> LoadedConfig:
         engines=models["engines.yaml"],
         sources=models["sources.yaml"],
         notify=models["notify.yaml"],
+        schedules=models["schedules.yaml"],
         raw=raw,
         policy_version="p-" + hashlib.sha256(canon.encode()).hexdigest()[:6],
     )
@@ -116,6 +117,7 @@ def initialize(config_dir: Path) -> None:
         "engines.yaml": {},
         "sources.yaml": {},
         "notify.yaml": {},
+        "schedules.yaml": {"schedules": []},
     }
     for name, value in defaults.items():
         (config_dir / name).write_text(yaml.safe_dump(value, allow_unicode=True, sort_keys=False))
