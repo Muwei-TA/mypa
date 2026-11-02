@@ -311,3 +311,22 @@ class OwnerFacade:
         with self.writing("rule.mode"):
             pass
         return {"rule_id": rule_id, "accept_mode": mode, "changed": True}
+
+    def reorder_rules(self, rule_ids: list[str]):
+        """Persist the new rule match order into rules.yaml (M3-08).
+
+        The full id list must be provided exactly once each; the YAML list
+        order is rewritten to match and the change is audited.
+        """
+        rules = load(self.config_dir).rules.model_dump(mode="json", by_alias=True)
+        known = [r["id"] for r in rules["rules"]]
+        if sorted(rule_ids) != sorted(known) or len(set(rule_ids)) != len(rule_ids):
+            raise PAError("provide every known rule id exactly once")
+        if rule_ids == known:
+            return {"rule_order": rule_ids, "changed": False}
+        by_id = {r["id"]: r for r in rules["rules"]}
+        rules["rules"] = [by_id[rid] for rid in rule_ids]
+        save_files(self.config_dir, {"rules.yaml": rules})
+        with self.writing("rule.reorder"):
+            pass
+        return {"rule_order": rule_ids, "changed": True}

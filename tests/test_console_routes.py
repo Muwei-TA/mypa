@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pa.api.app import create_app
-from pa.console.auth import SESSION_COOKIE, LoginService, hash_password, totp_now
+from pa.console.auth import SESSION_COOKIE, LoginService, hash_password
 
 
 class _StubFacade:

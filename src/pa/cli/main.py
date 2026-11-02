@@ -111,6 +111,23 @@ def config_path(ctx):
     return ctx.obj["config_dir"]
 
 
+def _load_json_argument(raw: str) -> dict:
+    """Accept @file.json, a bare file path, or inline JSON text."""
+    import json as _json
+
+    text_value = raw
+    if raw.startswith("@"):
+        text_value = Path(raw[1:]).expanduser().read_text()
+    elif not raw.strip().startswith(("{", "[")):
+        candidate = Path(raw).expanduser()
+        if candidate.exists():
+            text_value = candidate.read_text()
+    value = _json.loads(text_value)
+    if not isinstance(value, dict):
+        raise typer.BadParameter("JSON 对象 expected")
+    return value
+
+
 @contextmanager
 def owner(ctx):
     facade = OwnerFacade(config_path(ctx))
@@ -342,6 +359,32 @@ def rule_mode(
     """修改规则接单模式，写回 rules.yaml 并记审计。"""
     with owner(ctx) as facade:
         output(facade.set_rule_mode(id, mode))
+
+
+@rule_app.command("test")
+@guarded
+def rule_test(
+    ctx: typer.Context,
+    event: Annotated[str, typer.Argument(help="示例事件 JSON 文件路径（@file），或内联 JSON")],
+    json_output: JsonOption = False,
+):
+    """用示例事件测试规则命中情况，不实际执行。"""
+    from pa.console.testing import dry_run_rules
+
+    payload = _load_json_argument(event)
+    output(dry_run_rules(config_path(ctx), payload))
+
+
+@rule_app.command("reorder")
+@guarded
+def rule_reorder(
+    ctx: typer.Context,
+    rules: Annotated[str, typer.Argument(help="逗号分隔的完整规则顺序，如 r-a,r-b")],
+    json_output: JsonOption = False,
+):
+    """拖拽后的规则排序写回 rules.yaml 并记审计。"""
+    with owner(ctx) as facade:
+        output(facade.reorder_rules([item.strip() for item in rules.split(",") if item.strip()]))
 
 
 @plugin_app.command("list")
@@ -588,3 +631,20 @@ def skill_reorder(
 ):
     with owner(ctx) as facade:
         output(facade.reorder_skills([item.strip() for item in skills.split(",") if item.strip()]))
+
+
+@skill_app.command("test")
+@guarded
+def skill_test(
+    ctx: typer.Context,
+    id: str,
+    input_path: Annotated[
+        str, typer.Option("--input", help="示例输入 JSON 文件（@file）或内联 JSON")
+    ],
+    json_output: JsonOption = False,
+):
+    """测试 Skill：返回命中的规则与将执行的流程，不实际执行。"""
+    from pa.console.testing import dry_run_skill
+
+    payload = _load_json_argument(input_path)
+    output(dry_run_skill(config_path(ctx), id, payload))

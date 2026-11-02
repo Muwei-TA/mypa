@@ -100,6 +100,9 @@ class SettingsFacade:
     def reorder_skills(self, skill_ids):
         return self._owner.reorder_skills(skill_ids)
 
+    def reorder_rules(self, rule_ids):
+        return self._owner.reorder_rules(rule_ids)
+
 
 def facade_for(token_role: str, owner: OwnerFacade):
     """Map a token role to its facade; only 'owner' gets OwnerFacade."""
@@ -126,5 +129,6 @@ AGENT_FORBIDDEN_ATTRS = frozenset(
         "effect_drop",
         "set_rule_mode",
         "reorder_skills",
+        "reorder_rules",
     }
 )

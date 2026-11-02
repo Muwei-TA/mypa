@@ -17,6 +17,9 @@ from sqlalchemy import text
 
 from pa.common import PAError, now
 from pa.config.schema import Model
+from pa.console.search import search as global_search
+from pa.console.testing import dry_run_rules as test_event
+from pa.console.testing import dry_run_skill as test_skill
 from pa.ingress.github import GiteaWebhookAdapter, GitHubWebhookAdapter
 from pa.ingress.manual import ManualAdapter
 from pa.ingress.webhook_common import WebhookGuard
@@ -42,6 +45,18 @@ class DecisionAnswer(Model):
 class ConfigWrite(Model):
     value: dict
     base_revision: int = Field(ge=0)
+
+
+class ReorderInput(Model):
+    order: list[str]
+
+
+class RuleTestInput(Model):
+    event: dict = Field(default_factory=dict)
+
+
+class SkillTestInput(Model):
+    input: dict = Field(default_factory=dict)
 
 
 _STATUS_CODE = {
@@ -444,6 +459,29 @@ def create_app(
                 params["rule"] = rule
             query += " ORDER BY rowid DESC LIMIT 200"
             return {"items": [dict(r) for r in connection.execute(text(query), params).mappings()]}
+
+    # --- M3-08/10/11: reorder, search, rule & skill tests -----------------
+
+    @router.post("/skills:reorder")
+    def skills_reorder(body: ReorderInput, f=Depends(require_owner)):
+        return f.reorder_skills(body.order)
+
+    @router.post("/rules:reorder")
+    def rules_reorder(body: ReorderInput, f=Depends(require_owner)):
+        return f.reorder_rules(body.order)
+
+    @router.post("/rules:test")
+    def rules_test(body: RuleTestInput, f=Depends(require_agent)):
+        return test_event(f.config_dir, body.event)
+
+    @router.post("/skills/{skill_id}:test")
+    def skill_test(skill_id: str, body: SkillTestInput, f=Depends(require_agent)):
+        return test_skill(f.config_dir, skill_id, body.input)
+
+    @router.get("/search")
+    def search_all(q: str = Query(min_length=1), f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            return global_search(connection, q)
 
     app.include_router(router)
     if login_service is not None:
