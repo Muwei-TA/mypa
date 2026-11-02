@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 from alembic import command
 from pa.common import PAError
 
-SCHEMA_HEAD = "0006_worker_checkpoints"
+SCHEMA_HEAD = "0007_task_stage_view"
 
 
 def make_engine(path: str | Path) -> Engine:
