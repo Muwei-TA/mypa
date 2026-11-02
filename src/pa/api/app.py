@@ -58,6 +58,7 @@ def create_app(
     api_token: str | None = None,
     agent_token: str | None = None,
     webhook_secrets: dict[str, str] | None = None,
+    login_service=None,
 ) -> FastAPI:
     app = FastAPI(
         title="PA Automation", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None
@@ -445,4 +446,8 @@ def create_app(
             return {"items": [dict(r) for r in connection.execute(text(query), params).mappings()]}
 
     app.include_router(router)
+    if login_service is not None:
+        from pa.console.routes import build_console_router
+
+        app.include_router(build_console_router(login_service, facade))
     return app
