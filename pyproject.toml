@@ -40,6 +40,7 @@ codex_cli = "pa.engines.local:CodexCLI"
 hermes_cli = "pa.engines.local:HermesCLI"
 workbuddy_cli = "pa.engines.local:WorkBuddyCLI"
 [project.entry-points."pa.tools"]
+read_url = "pa.tools.read_url:ReadURL"
 [project.entry-points."pa.scm"]
 [project.entry-points."pa.notifiers"]
 [project.entry-points."pa.secrets"]

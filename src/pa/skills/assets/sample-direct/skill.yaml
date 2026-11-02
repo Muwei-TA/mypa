@@ -16,7 +16,7 @@ blocked_commands: [git push --force, rm -rf /]   # 只是默认约束，不是�
 tools: [read_url, memory_search, feishu_notify]
 permissions:
   network: allowlist
-  network_allow: ["*.github.com"]
+  network_allow: ["github.com", "*.github.com"]
   fs: workspace_only
   repo_write: false
 risk_ceiling: low

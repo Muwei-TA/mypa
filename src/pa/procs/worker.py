@@ -15,6 +15,7 @@ from pa.hub.dispatcher import claim, recover_expired
 from pa.notify.dispatch import request_notification
 from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
+from pa.plugins import discover
 from pa.skills.limits import ExecutionBudget
 from pa.skills.loader import load_skill
 from pa.skills.prompt_assembly import assemble
@@ -25,10 +26,11 @@ from pa.store.transitions import transition
 
 
 class Worker:
-    def __init__(self, facade, config_dir, *, engines=None, sleeper=None):
+    def __init__(self, facade, config_dir, *, engines=None, sleeper=None, tools=None):
         self.facade = facade
         self.config_dir = config_dir
         self.injected = engines or {}
+        self.tools = tools or {}
         # Injected in tests so transient backoff does not slow the suite.
         self.sleeper = sleeper or asyncio.sleep
 
@@ -107,7 +109,7 @@ class Worker:
                 return stopped
             if result.error_kind == "cancelled":
                 return {"task_id": task["id"], "status": "cancelled"}
-            if result.error_kind in {"task_token_limit", "task_timeout"}:
+            if result.error_kind in {"task_token_limit", "task_timeout", "source_read_failed"}:
                 return self._escalate_limit(task, result.error_kind, config)
             if result.receipt is not None and not result.error:
                 return await self._finalize(task, run_id, result, engine_id, config)
@@ -143,6 +145,47 @@ class Worker:
             result.error_kind = reason
         return result
 
+    async def _prepare_request(self, payload, task, config, output_dir, recovered, budget):
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(budget.remaining_s):
+                content = payload.get("text") or json.dumps(payload, ensure_ascii=False)
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False)
+                if redact(content) != content:
+                    raise PAError("input appears to contain a secret")
+                url = payload.get("url")
+                if url is None and content.strip().startswith(("https://", "http://")):
+                    url = content.strip() if len(content.split()) == 1 else None
+                if url is not None:
+                    if not isinstance(url, str):
+                        raise PAError("source URL must be a string", "source_read_failed")
+                    skill = load_skill(task["skill_id"])
+                    if "read_url" not in skill.tools:
+                        raise PAError("Skill does not allow read_url", "source_read_failed")
+                    reader = self.tools.get("read_url")
+                    if reader is None:
+                        entry = discover("pa.tools").get("read_url")
+                        if entry is None:
+                            raise PAError("read_url is not installed", "source_read_failed")
+                        reader = entry.load()()
+                    source = await reader.read(url, permissions=skill.permissions)
+                    content = (
+                        f"原始输入：\n{content}\n\n已读取来源：{source.url}\n原文：\n{source.text}"
+                    )
+                return EngineRequest(
+                    task_id=task["id"],
+                    output_dir=output_dir,
+                    prompt=assemble(
+                        content,
+                        policy_version=config.policy_version,
+                        recovered=recovered,
+                        skill_id=task["skill_id"],
+                    ),
+                )
+        finally:
+            budget.consume(Usage(duration_s=time.monotonic() - started))
+
     async def _attempt(self, task, engine, engine_id, config, budget):
         run_id = new_id()
         with transaction(self.facade.engine) as connection:
@@ -177,31 +220,48 @@ class Worker:
                 },
             )
         output_dir = config.main.data_path(self.config_dir) / "runs" / task["id"] / run_id
-        content = payload.get("text") or json.dumps(payload, ensure_ascii=False)
+        started = time.monotonic()
+        completed_usage = Usage()
+        before_preparation = budget.duration_s
+        preparing = asyncio.create_task(
+            self._prepare_request(payload, task, config, output_dir, recovered, budget)
+        )
+        running_ref = [preparing]
+        heartbeat = asyncio.create_task(self._heartbeat(task, running_ref))
+        request = None
         try:
-            request = EngineRequest(
-                task_id=task["id"],
-                output_dir=output_dir,
-                prompt=assemble(
-                    content,
-                    policy_version=config.policy_version,
-                    recovered=recovered,
-                ),
-            )
-        except PAError:
-            result = EngineResult(
-                engine_id=engine_id,
-                error="secret detected in input",
-                error_kind="fatal",
-            )
-        else:
-            started = time.monotonic()
-            completed_usage = Usage()
-            running = asyncio.create_task(self._bounded_call(engine, engine_id, request, budget))
-            running_ref = [running]
-            heartbeat = asyncio.create_task(self._heartbeat(task, running_ref))
             try:
-                result = await running
+                request = await preparing
+            except TimeoutError:
+                result = EngineResult(
+                    engine_id=engine_id,
+                    error="task preparation timed out",
+                    error_kind="task_timeout",
+                )
+            except PAError as exc:
+                result = EngineResult(
+                    engine_id=engine_id,
+                    error="source could not be read"
+                    if exc.code == "source_read_failed"
+                    else "secret detected in input",
+                    error_kind="source_read_failed"
+                    if exc.code == "source_read_failed"
+                    else "fatal",
+                )
+            finally:
+                preparation_s = budget.duration_s - before_preparation
+            if request is not None:
+                if self._stopped(task):
+                    result = EngineResult(
+                        engine_id=engine_id, error="cancelled", error_kind="cancelled"
+                    )
+                elif reason := budget.exhausted:
+                    result = EngineResult(engine_id=engine_id, error=reason, error_kind=reason)
+                else:
+                    running_ref[0] = asyncio.create_task(
+                        self._bounded_call(engine, engine_id, request, budget)
+                    )
+                    result = await running_ref[0]
                 completed_usage = result.usage.model_copy(deep=True)
                 if result.error_kind == "invalid_output" and not self._stopped(task):
                     # PRD §8.3: one same-engine correction before switching engines.
@@ -228,25 +288,30 @@ class Worker:
                     )
                     if result.receipt:
                         result.receipt.usage = result.usage
-            except asyncio.CancelledError:
-                # Preserve completed calls (including a failed receipt before repair)
-                # and elapsed time when shutdown or owner cancellation interrupts us.
-                completed_usage.duration_s = max(
-                    completed_usage.duration_s, time.monotonic() - started
-                )
-                cancelled = EngineResult(
-                    engine_id=engine_id,
-                    error="cancelled",
-                    error_kind="cancelled",
-                    usage=completed_usage,
-                )
-                self._record_attempt(run_id, task, cancelled, engine_id)
-                if asyncio.current_task().cancelling():
-                    raise
-                return run_id, cancelled
-            finally:
-                heartbeat.cancel()
-                await asyncio.gather(heartbeat, return_exceptions=True)
+            # Preparation (including URL fetch) consumes the same task time allowance.
+            # Engine time is already included in result.usage; do not count it twice.
+            result.usage.duration_s += preparation_s
+            if result.receipt:
+                result.receipt.usage = result.usage
+        except asyncio.CancelledError:
+            completed_usage.duration_s = max(
+                completed_usage.duration_s,
+                time.monotonic() - started,
+                budget.duration_s - before_preparation,
+            )
+            cancelled = EngineResult(
+                engine_id=engine_id,
+                error="cancelled",
+                error_kind="cancelled",
+                usage=completed_usage,
+            )
+            self._record_attempt(run_id, task, cancelled, engine_id)
+            if asyncio.current_task().cancelling():
+                raise
+            return run_id, cancelled
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
         self._record_attempt(run_id, task, result, engine_id)
         return run_id, result
 
@@ -472,11 +537,13 @@ class Worker:
             }
 
     def _escalate_limit(self, task, reason, config):
-        question = (
-            "任务累计 token 用量已达上限，需要你接手处理。"
-            if reason == "task_token_limit"
-            else "任务累计执行时间已达上限，需要你接手处理。"
-        )
+        question = {
+            "task_token_limit": "任务累计 token 用量已达上限，需要你接手处理。",
+            "task_timeout": "任务累计执行时间已达上限，需要你接手处理。",
+            "source_read_failed": (
+                "无法读取此任务的 URL 原文。请提供可访问的许可域名链接或粘贴原文。"
+            ),
+        }[reason]
         with transaction(self.facade.engine) as connection:
             current = (
                 connection.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})

@@ -22,20 +22,22 @@
 - [持久化定时事件](docs/schedules.md)：APScheduler + SQLite，重启补接、原触发时间去重、
   配置同步与启停，事件仍经过规则与 observe/auto 准入；
 - Skill 包内资产与加载器：`sample-direct` 的 `skill.yaml`/`prompt.md`（Jinja2）
-  经 Pydantic 校验并驱动提示词组装，完成文本摘要与结案；URL 当前仅作为文本输入；
+  经 Pydantic 校验并驱动提示词组装；支持文本，以及经
+  [许可域名原文读取](docs/source-reader.md) 的 URL 输入与摘要回执；
 - REST 基础接口（FastAPI + Uvicorn，绑定 127.0.0.1）：`/healthz`、`/api/v1/health`、
   `POST /events`（支持 `Idempotency-Key`）、`GET /tasks`、`/system:pause|resume|state`，
   私有接口强制 Bearer 校验；经 `python -m pa.procs.server <config-dir>` 启动，
   启动前需通过 `pa secret set secret://keychain/pa/api_owner_token` 配置 owner 令牌。
 
-**尚未实施**：真实 URL 抓取、豆包 GUI 执行、完整 REST 与角色权限面（M3）、
+**尚未实施**：豆包 GUI 执行、完整 REST 与角色权限面（M3）、
 代码平台闭环（M2）及容器隔离。不能视为完整 M1 已验收。
 分项进度和 [评审记录](docs/reviews/2026-11-02-m1.md) 中列出了验证边界。
 后续任务及逐项验收依据见 [开发进度表](docs/PROGRESS.md)。
 
 累计 token 依据引擎已报告用量检查，在调用结束后及下一次调用前生效；尚不支持
 流式 token 硬截断，也无法还原被强杀或未报告的 token。执行时间累计已记账的引擎
-调用时长，不包含排队与重试退避；轮数累计限制仍待实现。这些限制不依赖金额预算。
+调用和输入准备（包括 URL 读取）时长，不包含排队与重试退避；轮数累计限制仍待实现。
+这些限制不依赖金额预算。
 
 ## 本地开发
 
