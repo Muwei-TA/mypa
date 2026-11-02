@@ -39,6 +39,7 @@ default = true
 codex_cli = "pa.engines.local:CodexCLI"
 hermes_cli = "pa.engines.local:HermesCLI"
 workbuddy_cli = "pa.engines.local:WorkBuddyCLI"
+gui = "pa.engines.gui.engine:GuiEngine"
 [project.entry-points."pa.tools"]
 read_url = "pa.tools.read_url:ReadURL"
 [project.entry-points."pa.scm"]

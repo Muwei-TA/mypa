@@ -485,6 +485,38 @@ def engine_test(
         raise typer.Exit(2)
 
 
+@engine_app.command("playbook")
+@guarded
+def engine_playbook(
+    ctx: typer.Context,
+    action: Annotated[str, typer.Argument(help="record 或 dry-run")],
+    id: str,
+    json_output: JsonOption = False,
+):
+    """剧本录制占位与试运行：dry-run 只打开不提交任何内容（M4-08）。"""
+    from pa.engines.gui.driver import SyntheticDriver
+    from pa.engines.gui.playbook import PlaybookRun, load_playbook
+
+    if action == "record":
+        output(
+            {
+                "engine_id": id,
+                "recorded": False,
+                "note": "录制需在 Mac mini 图形会话中进行（暂留）",
+            }
+        )
+        return
+    if action != "dry-run":
+        raise typer.BadParameter("action 必须是 record 或 dry-run")
+
+    playbook = load_playbook(config_path(ctx), id)
+    run = PlaybookRun(playbook, SyntheticDriver())
+    result = run.execute(prompt="试运行：不要提交任何内容", dry_run=True)
+    output({"engine_id": id, **{k: v for k, v in result.items() if k != "log"}})
+    if result["status"] != "succeeded":
+        raise typer.Exit(2)
+
+
 @secret_app.command("set")
 @guarded
 def secret_set(ref: str, json_output: JsonOption = False):

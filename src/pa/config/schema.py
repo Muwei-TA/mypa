@@ -233,6 +233,8 @@ class EngineConfig(Model):
     max_turns: int = Field(default=4, ge=1, le=30)
     max_output_bytes: int = Field(default=2_097_152, ge=1024, le=8_388_608)
     app_path: str | None = None
+    playbook: str | None = None
+    pricing: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def executable_required(self):
