@@ -33,6 +33,7 @@ secret_app = typer.Typer(no_args_is_help=True, help="密钥安全输入与只读
 feishu_app = typer.Typer(no_args_is_help=True, help="飞书长连接配置、验证与本人配对")
 service_app = typer.Typer(no_args_is_help=True, help="macOS 后台服务")
 skill_app = typer.Typer(no_args_is_help=True, help="Skill 全局排序")
+rule_app = typer.Typer(no_args_is_help=True, help="规则查询与接单模式")
 for name, group in (
     ("config", config_app),
     ("event", event_app),
@@ -45,6 +46,7 @@ for name, group in (
     ("feishu", feishu_app),
     ("service", service_app),
     ("skill", skill_app),
+    ("rule", rule_app),
 ):
     app.add_typer(group, name=name)
 
@@ -306,6 +308,40 @@ def observe_list(ctx: typer.Context, limit: int = 50, json_output: JsonOption = 
 def effect_list(ctx: typer.Context, limit: int = 50, json_output: JsonOption = False):
     with owner(ctx) as facade:
         output(facade.list("effects", limit))
+
+
+@effect_app.command("retry")
+@guarded
+def effect_retry(ctx: typer.Context, id: str, json_output: JsonOption = False):
+    """重新排队一个发件箱条目（owner 判断后人工重试）。"""
+    with owner(ctx) as facade:
+        output(facade.effect_retry(id))
+
+
+@effect_app.command("drop")
+@guarded
+def effect_drop(
+    ctx: typer.Context,
+    id: str,
+    reason: Annotated[str, typer.Option(help="丢弃原因")] = "owner_dropped",
+    json_output: JsonOption = False,
+):
+    """丢弃一个发件箱条目；已完成的条目不可丢弃。"""
+    with owner(ctx) as facade:
+        output(facade.effect_drop(id, reason=reason))
+
+
+@rule_app.command("mode")
+@guarded
+def rule_mode(
+    ctx: typer.Context,
+    id: str,
+    mode: Annotated[str, typer.Argument(help="off / observe / auto")],
+    json_output: JsonOption = False,
+):
+    """修改规则接单模式，写回 rules.yaml 并记审计。"""
+    with owner(ctx) as facade:
+        output(facade.set_rule_mode(id, mode))
 
 
 @plugin_app.command("list")

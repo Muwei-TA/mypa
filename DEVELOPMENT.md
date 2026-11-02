@@ -1,5 +1,27 @@
 # 开发记录
 
+## 2026-11-02（M1-16/19/21：补发执行器、规则/发件箱 CLI、隔离 E2E）
+
+- 用户恢复开发，按进度表优先级完成三项 M1 收尾：
+- **M1-16 补发执行器**：`notify/dispatch.backfill_recovered` 在飞书发送成功的同事务内
+  恢复待补发 effect——`failed` 且未达 8 次上限的重置为 `pending` 立即到期，
+  `pending/running` 保留标记，`done/dropped` 清除标记；`attempts=8` 的 delivery_unknown
+  条目不自动重发，仍由 owner 经 `effect retry` 人工决策。
+- **M1-19 CLI 缺口**：新增 `pa effect retry/drop`（重置租约与退避、记录丢弃原因、
+  done/dropped 拒绝二次操作）与 `pa rule mode <id> off|observe|auto`（重新加载配置、
+  save_files 校验备份后写回 rules.yaml、记审计）；全部支持 `--json` 与退出码 4。
+- **M1-21 隔离 E2E**：新增 `tests/e2e/`（真实 `pa` 子进程 + 隔离配置目录 + SQLite +
+  codex 事件流格式假引擎）：E2E-01 手动触发到 closed（含 notify=result 的 P2 缓冲产物）、
+  E2E-02 kill -9 后监督重启不重复执行（core_lock 40s 过期 + 租约恢复后重跑，
+  断言 attempt 无重复、effect 幂等键无重复）、E2E-03 暂停事件入库不派单、恢复后结案、
+  E2E-04 cron 推断事件在 observe 规则下仅记录不建任务（manual 是明确请求按 PRD 不受
+  observe 限制，故用 cron 源）。
+- 新增 11 项测试（7 行为 + 4 E2E），全量 **345 项通过**，Ruff 与格式检查通过，
+  sdist/wheel 构建成功。
+- 边界：E2E-02 以监督重启模拟 launchd 拉起，真实 launchd/飞书收发仍属 Mac mini 外部
+  验收；E2E-01 的飞书发送用假源验证到 effects 入库，不验证真实投递。未升级正式服务。
+- M2–M5 计划继续，见 `docs/PROGRESS.md`。
+
 ## 2026-11-02（M1-12：暂停研判与持久检查点，提交后暂停开发）
 
 - 复核发现原暂停只挡新派单和 effects，正在执行的尝试完成后仍会研判/结案/重派。
