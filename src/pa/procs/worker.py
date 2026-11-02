@@ -155,7 +155,8 @@ class Worker:
             )
         else:
             running = asyncio.create_task(engine.run(request))
-            heartbeat = asyncio.create_task(self._heartbeat(task, asyncio.current_task()))
+            running_ref = [running]
+            heartbeat = asyncio.create_task(self._heartbeat(task, running_ref))
             try:
                 result = await running
                 if result.error_kind == "invalid_output" and not self._stopped(task):
@@ -172,7 +173,8 @@ class Worker:
                         }
                     )
                     previous = result.usage.model_copy(deep=True)
-                    result = await engine.run(repair)
+                    running_ref[0] = asyncio.create_task(engine.run(repair))
+                    result = await running_ref[0]
                     result.usage = Usage(
                         input_tokens=previous.input_tokens + result.usage.input_tokens,
                         output_tokens=previous.output_tokens + result.usage.output_tokens,
@@ -186,6 +188,8 @@ class Worker:
                         text("UPDATE runs SET ended_at=:at, outcome='cancelled' WHERE id=:id"),
                         {"id": run_id, "at": now()},
                     )
+                if asyncio.current_task().cancelling():
+                    raise
                 return run_id, EngineResult(
                     engine_id=engine_id, error="cancelled", error_kind="cancelled"
                 )
@@ -430,7 +434,7 @@ class Worker:
         jitter = secrets.SystemRandom().uniform(0, base * 0.25)
         await self.sleeper(base + jitter)
 
-    async def _heartbeat(self, task, running):
+    async def _heartbeat(self, task, running_ref):
         while True:
             await asyncio.sleep(10)
             with transaction(self.facade.engine) as connection:
@@ -446,5 +450,5 @@ class Worker:
                     },
                 )
                 if not result.rowcount:
-                    running.cancel()
+                    running_ref[0].cancel()
                     return

@@ -71,4 +71,15 @@ def listen(config_dir: Path):
 
 
 if __name__ == "__main__":
-    listen(Path(sys.argv[1]))
+    import structlog
+
+    from pa.obs.logging import configure
+
+    configure()
+    try:
+        listen(Path(sys.argv[1]))
+    except Exception as exc:
+        structlog.get_logger().error(
+            "feishu_listener_failed", error_type=type(exc).__name__, error=str(exc)
+        )
+        raise SystemExit(2) from None

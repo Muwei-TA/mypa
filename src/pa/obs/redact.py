@@ -6,6 +6,9 @@ class Redactor:
     def __init__(self):
         self._known: set[str] = set()
         self._patterns = [
+            re.compile(
+                r"(?i)(?:access_token|refresh_token|ticket|client_secret|api_key)=[^&\s\"']+"
+            ),
             re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.S),
             re.compile(r"\b(?:sk-|ghp_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]+"),
             re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
