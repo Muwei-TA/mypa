@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.14,<2",
+  "httpx>=0.28,<1",
+  "jsonschema>=4.23,<5",
+  "keyring>=25.6,<27",
+  "lark-oapi>=1.5,<2",
   "pydantic>=2.10,<3",
   "PyYAML>=6.0.2,<7",
   "SQLAlchemy>=2.0.36,<2.1",
@@ -24,14 +28,19 @@ pa = "pa.cli.main:app"
 manual = "pa.ingress.manual:ManualAdapter"
 cron = "pa.ingress.cron:CronAdapter"
 [project.entry-points."pa.engines"]
+codex_cli = "pa.engines.local:CodexCLI"
+hermes_cli = "pa.engines.local:HermesCLI"
+workbuddy_cli = "pa.engines.local:WorkBuddyCLI"
 [project.entry-points."pa.tools"]
 [project.entry-points."pa.scm"]
 [project.entry-points."pa.notifiers"]
 [project.entry-points."pa.secrets"]
 env = "pa.secrets.resolver:EnvProvider"
+keychain = "pa.secrets.keychain:KeychainProvider"
 [project.entry-points."pa.hooks"]
 [project.entry-points."pa.sandbox"]
 [project.entry-points."pa.effects"]
+"feishu.send" = "pa.effects.feishu:FeishuHandler"
 
 [dependency-groups]
 dev = [

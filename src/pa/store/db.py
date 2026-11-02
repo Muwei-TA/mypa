@@ -9,6 +9,8 @@ from sqlalchemy.engine import Engine
 from alembic import command
 from pa.common import PAError
 
+SCHEMA_HEAD = "0002_effect_leases"
+
 
 def make_engine(path: str | Path) -> Engine:
     path = Path(path).expanduser().resolve()

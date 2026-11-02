@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from pa.common import PAError
-from pa.config.schema import CONFIG_MODELS, LoadedConfig
+from pa.config.schema import CONFIG_MODELS, OPTIONAL_CONFIGS, LoadedConfig
 
 
 class UniqueLoader(yaml.SafeLoader):
@@ -66,7 +66,11 @@ def load(config_dir: Path) -> LoadedConfig:
     for name, model in CONFIG_MODELS.items():
         path = config_dir / name
         try:
-            value = expand(yaml.load(path.read_text(), Loader=UniqueLoader))
+            value = (
+                {}
+                if name in OPTIONAL_CONFIGS and not path.exists()
+                else expand(yaml.load(path.read_text(), Loader=UniqueLoader))
+            )
             models[name] = model.model_validate(value)
             raw[name] = models[name].model_dump(mode="json", by_alias=True)
         except FileNotFoundError:
@@ -84,6 +88,9 @@ def load(config_dir: Path) -> LoadedConfig:
         main=models["pa.yaml"],
         rules=models["rules.yaml"],
         principals=models["principals.yaml"],
+        engines=models["engines.yaml"],
+        sources=models["sources.yaml"],
+        notify=models["notify.yaml"],
         raw=raw,
         policy_version="p-" + hashlib.sha256(canon.encode()).hexdigest()[:6],
     )
@@ -106,6 +113,9 @@ def initialize(config_dir: Path) -> None:
             ]
         },
         "principals.yaml": {"owner": {}},
+        "engines.yaml": {},
+        "sources.yaml": {},
+        "notify.yaml": {},
     }
     for name, value in defaults.items():
         (config_dir / name).write_text(yaml.safe_dump(value, allow_unicode=True, sort_keys=False))

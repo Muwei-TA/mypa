@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SEVEN_TAGS = frozenset(
     {
@@ -169,16 +169,85 @@ class PrincipalsConfig(Model):
     owner: OwnerIdentities = Field(default_factory=OwnerIdentities)
 
 
+class EngineConfig(Model):
+    adapter: Literal["codex_cli", "hermes_cli", "workbuddy_cli", "gui"]
+    command: list[str] = Field(default_factory=list)
+    model: str | None = None
+    enabled: bool = True
+    max_concurrency: int = Field(default=1, ge=1, le=8)
+    timeout_s: int = Field(default=180, ge=5, le=1200)
+    max_turns: int = Field(default=4, ge=1, le=30)
+    max_output_bytes: int = Field(default=2_097_152, ge=1024, le=8_388_608)
+    app_path: str | None = None
+
+    @model_validator(mode="after")
+    def executable_required(self):
+        if self.enabled and self.adapter != "gui" and not self.command:
+            raise ValueError("enabled CLI engine requires command")
+        return self
+
+
+class EnginesConfig(Model):
+    engines: dict[str, EngineConfig] = Field(default_factory=dict)
+    roles: dict[str, list[str]] = Field(default_factory=lambda: {"dev": []})
+
+    @model_validator(mode="after")
+    def known_engines(self):
+        if any(ref not in self.engines for refs in self.roles.values() for ref in refs):
+            raise ValueError("role references an unknown engine")
+        return self
+
+
+class FeishuSource(Model):
+    enabled: bool = False
+    brand: Literal["feishu", "lark"] = "feishu"
+    mode: Literal["long_connection"] = "long_connection"
+    app_id: str | None = None
+    app_secret: str = "secret://keychain/pa/feishu_app_secret"
+
+    _secret_reference = field_validator("app_secret")(ConsoleAuth.secret_ref.__func__)
+
+    @model_validator(mode="after")
+    def app_required(self):
+        if self.enabled and not self.app_id:
+            raise ValueError("enabled Feishu source requires app_id")
+        return self
+
+
+class Sources(Model):
+    feishu: FeishuSource = Field(default_factory=FeishuSource)
+
+
+class SourcesConfig(Model):
+    sources: Sources = Field(default_factory=Sources)
+
+
+class NotifyTarget(Model):
+    type: Literal["user", "chat"] = "user"
+    id: str | None = None
+
+
+class NotifyConfig(Model):
+    target: NotifyTarget = Field(default_factory=NotifyTarget)
+
+
 CONFIG_MODELS: dict[str, type[Model]] = {
     "pa.yaml": PAConfig,
     "rules.yaml": RulesConfig,
     "principals.yaml": PrincipalsConfig,
+    "engines.yaml": EnginesConfig,
+    "sources.yaml": SourcesConfig,
+    "notify.yaml": NotifyConfig,
 }
+OPTIONAL_CONFIGS = {"engines.yaml", "sources.yaml", "notify.yaml"}
 
 
 class LoadedConfig(Model):
     main: PAConfig
     rules: RulesConfig
     principals: PrincipalsConfig
+    engines: EnginesConfig = Field(default_factory=EnginesConfig)
+    sources: SourcesConfig = Field(default_factory=SourcesConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
     policy_version: str
     raw: dict[str, Any]
