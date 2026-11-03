@@ -337,6 +337,19 @@ class CodeExecutor:
                 stage = "released"
         verified = False
         if stage in ("merged", "released") and entry.verify_hook != "none":
+            mirror = None
+            if entry.verify_hook == "version_endpoint":
+                from pa.workspace.mirror import ensure_mirror
+
+                # The mirror must contain the actual merge commit and the
+                # deployed live ref. Refresh it on each polling attempt.
+                mirror = await asyncio.to_thread(
+                    ensure_mirror,
+                    config.main.data_path(self.config_dir),
+                    entry.scm,
+                    task["repo"],
+                    entry.remote,
+                )
             outcome = await verify_hook(
                 entry.verify_hook,
                 args={
@@ -344,6 +357,9 @@ class CodeExecutor:
                     "status": entry.verify_status,
                     "keyword": entry.verify_keyword,
                 },
+                mirror=mirror,
+                merged_sha=merged_sha,
+                attempts=1,  # polling worker retries instead of blocking 10 minutes
             )
             if not outcome["verified"]:
                 return {
@@ -355,9 +371,10 @@ class CodeExecutor:
             with transaction(self.facade.engine) as c:
                 c.execute(
                     text(
-                        "UPDATE pull_requests SET ci_stage='verified',verified_at=:at WHERE id=:id"
+                        "UPDATE pull_requests SET ci_stage='verified',verified_at=:at,"
+                        "live_sha=:live WHERE id=:id"
                     ),
-                    {"at": now(), "id": recorded["id"]},
+                    {"at": now(), "id": recorded["id"], "live": outcome.get("live_sha")},
                 )
         elif stage == "verified":
             verified = True
@@ -377,7 +394,9 @@ class CodeExecutor:
                     current["version"],
                     [
                         Reason(
-                            code="release_http_verified"
+                            code="live_version_verified"
+                            if verified and entry.verify_hook == "version_endpoint"
+                            else "release_http_verified"
                             if verified
                             else "pr_merged_no_verification"
                         )

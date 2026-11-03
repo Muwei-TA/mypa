@@ -14,7 +14,7 @@ This is the repository's **live acceptance register**. Source of truth: `docs/de
 | M2 mandatory `pa/ai-review` and `ci` platform branch protection | BLOCKED | Can check API when sandbox repo is available (#5) |
 | M2 SHA-bound approval, safe merge, no privilege bypass | PARTIAL | Simulated PR tests; real platform reject-bypass test pending (#5) |
 | M2 Issue/PR comment resumes original mandate | PARTIAL | Fake Gitea replay verified; real webhooks pending (#5) |
-| M2 release hook + deployed SHA ancestry verification | PARTIAL | Workflow dispatch + HTTP smoke simulated; no live SHA ancestor endpoint (#5) |
+| M2 release hook + deployed SHA ancestry verification | PARTIAL | Workflow dispatch + HTTP smoke simulated; `version_endpoint` now parses deployed SHA and checks Git ancestry in a refreshed mirror; real deployed service endpoint and real Gitea merge are pending (#5) |
 | M2 decision precedents avoid repeated owner prompts | NOT RUN | End-to-end precedent-case suite required (#4/#5) |
 | M3 control panel covers everyday operations | PARTIAL | Isolated real Uvicorn auth/config/decision 10 checks passed; drag-and-drop/other operations pending (#6) |
 | M4 native macOS GUI runs `sample-direct` with risk limits | NOT RUN | Synthetic GUI does not meet PRD acceptance (#6) |
@@ -27,6 +27,7 @@ This is the repository's **live acceptance register**. Source of truth: `docs/de
 
 - `docs/reviews/2026-11-03-business-flow.md` describes 2026-11-03 Mac worktree / simulated SCM acceptance with full local pytest, Ruff, build and real Mac Codex.
 - `.github/workflows/ci.yml` adds remote CI. **This checks lint/unit tests/build only; it does not provide the mandatory independent `pa/ai-review` context.**
+- `tests/test_version_endpoint_flow.py` covers version payload parsing, rejection of stale live SHAs, and subsequent SHA-ancestry verification against a real disposable Git history. This is not a real deployment acceptance test.
 
 ## Remote testing policy
 
