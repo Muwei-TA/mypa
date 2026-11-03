@@ -38,6 +38,8 @@ class FakePlatform:
         self.failed = True
         self.merges = []
         self.dispatches = []
+        self.review_status = "success"
+        self.status_updates = []
 
     async def find_pr_by_branch(self, repo, branch):
         if self.pr is None:
@@ -72,13 +74,16 @@ class FakePlatform:
 
     async def get_checks(self, repo, pr):
         status = "failure" if self.failed else "success"
-        return CheckSummary(
-            state=status,
-            contexts=[
-                {"context": "ci", "state": status},
-                {"context": "pa/ai-review", "state": "success"},
-            ],
-        )
+        contexts = [{"context": "ci", "state": status}]
+        if self.review_status is not None:
+            contexts.append({"context": "pa/ai-review", "state": self.review_status})
+        aggregate = "failure" if self.review_status == "failure" else status
+        return CheckSummary(state=aggregate, contexts=contexts)
+
+    async def set_status(self, repo, sha, context, state, description="", url=None):
+        self.status_updates.append((repo, sha, context, state, description))
+        if context == "pa/ai-review":
+            self.review_status = state
 
     async def merge(self, repo, pr, method):
         self.merges.append((repo, pr.sha, method))
@@ -544,3 +549,195 @@ def test_native_gitea_webhook_signature_through_http(configured):
             },
         )
         assert rejected.status_code == 401
+
+
+def test_gitea_native_ci_context_is_required_by_exact_name():
+    native = "PA v1.1 Sandbox CI / ci (pull_request)"
+    repo = CodeRepository(
+        scm="gitea",
+        remote="ssh://gitea@example.test:2222/muwei/sandbox.git",
+        ci_context=native,
+        required_checks=["pa/ai-review", native],
+    )
+    assert repo.ci_context == native
+    with pytest.raises(ValidationError):
+        CodeRepository(
+            scm="gitea",
+            remote="ssh://gitea@example.test:2222/muwei/sandbox.git",
+            ci_context=native,
+            required_checks=["pa/ai-review", "ci"],
+        )
+    with pytest.raises(ValidationError):
+        CodeRepository(
+            scm="gitea",
+            remote="ssh://gitea@example.test:2222/muwei/sandbox.git",
+            ci_context="pa/ai-review",
+            required_checks=["pa/ai-review"],
+        )
+
+
+def _enable_review_role(configured):
+    settings = load(configured.config_dir).engines.model_dump(mode="json")
+    settings["engines"]["hermes_reviewer"] = {
+        "adapter": "hermes_cli",
+        "command": ["/usr/bin/true"],
+        "model": "independent-test-model",
+        "max_turns": 2,
+    }
+    settings["roles"]["review"] = ["hermes_reviewer"]
+    save_files(configured.config_dir, {"engines.yaml": settings})
+
+
+def test_worker_auto_real_role_review_and_sha_bound_status(configured, tmp_path, monkeypatch):
+    import json
+
+    task_id, platform = _prepare_flow(configured, tmp_path, monkeypatch)
+    platform.failed = False
+    platform.review_status = None
+    _enable_review_role(configured)
+    seen = []
+
+    async def fake_reviewer_process(cmd, *, cwd, extra_env, **kwargs):
+        seen.append(cmd)
+        assert "--toolsets" in cmd and "clarify" in cmd
+        assert "--max-turns" not in cmd
+        assert extra_env == {"HERMES_MAX_ITERATIONS": "2"}
+        assert "PR head SHA:" in cmd[-1] and "diff --git" in cmd[-1]
+        (cwd / "usage.json").write_text(
+            json.dumps(
+                {
+                    "input_tokens": 90,
+                    "output_tokens": 10,
+                    "model": "independent-test-model",
+                }
+            )
+        )
+        return (
+            0,
+            json.dumps({"issues": [], "verdict": "approve", "summary": "Patch matches issue"}),
+            "",
+        )
+
+    monkeypatch.setattr("pa.ci.executor.run_process", fake_reviewer_process)
+    worker = Worker(configured, configured.config_dir, engines={"fake": FakeCodeEngine()})
+    assert asyncio.run(worker.once())["status"] == "awaiting_ci"
+    review = asyncio.run(worker.once())
+    assert review["ai_review"] == "approve" and not review["same_model_fallback"]
+    assert platform.status_updates[-1][2:4] == ("pa/ai-review", "success")
+    assert len(seen) == 1
+    with configured.engine.connect() as c:
+        stored = c.execute(
+            text(
+                "SELECT engine_id,model,issues_json FROM reviews WHERE pr_id IN "
+                "(SELECT id FROM pull_requests WHERE task_id=:id)"
+            ),
+            {"id": task_id},
+        ).one()
+    assert stored[0] == "hermes_reviewer" and stored[1] == "independent-test-model"
+    assert json.loads(stored[2])["head_sha"] == platform.status_updates[-1][1]
+    assert asyncio.run(worker.once())["status"] == "awaiting_decision"
+    assert platform.merges == []
+
+
+def test_reviewer_invalid_or_inconsistent_json_never_posts_pass(configured, tmp_path, monkeypatch):
+    from pa.ci.executor import normalize_review
+    from pa.common import PAError
+
+    with pytest.raises(PAError):
+        normalize_review('{"issues":[{"severity":"major","title":"bug"}],"verdict":"approve"}')
+    task_id, platform = _prepare_flow(configured, tmp_path, monkeypatch)
+    platform.failed = False
+    platform.review_status = None
+    _enable_review_role(configured)
+
+    async def broken_reviewer(*args, **kwargs):
+        return 0, '{"issues":[],"verdict":"not_a_verdict"}', ""
+
+    monkeypatch.setattr("pa.ci.executor.run_process", broken_reviewer)
+    worker = Worker(configured, configured.config_dir, engines={"fake": FakeCodeEngine()})
+    assert asyncio.run(worker.once())["status"] == "awaiting_ci"
+    assert asyncio.run(worker.once()) is None
+    assert platform.status_updates == [] and platform.merges == []
+    with configured.engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM reviews")).scalar_one() == 0
+
+
+def test_independent_review_major_failure_requeues_code(configured, tmp_path, monkeypatch):
+    import json
+
+    task_id, platform = _prepare_flow(configured, tmp_path, monkeypatch)
+    platform.failed = False
+    platform.review_status = None
+    _enable_review_role(configured)
+
+    async def major_reviewer(*args, **kwargs):
+        return (
+            0,
+            json.dumps(
+                {
+                    "issues": [
+                        {
+                            "severity": "major",
+                            "title": "Broken acceptance condition",
+                            "detail": "The diff does not implement the requirement",
+                        }
+                    ],
+                    "verdict": "request_changes",
+                    "summary": "Major correctness defect",
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr("pa.ci.executor.run_process", major_reviewer)
+    worker = Worker(configured, configured.config_dir, engines={"fake": FakeCodeEngine()})
+    assert asyncio.run(worker.once())["status"] == "awaiting_ci"
+    result = asyncio.run(worker.once())
+    assert result["ai_review"] == "request_changes"
+    assert platform.status_updates[-1][3] == "failure"
+    retry = asyncio.run(worker.once())
+    assert retry["status"] == "queued" and retry["fix_round"] == 1
+    assert platform.merges == []
+
+
+def test_independent_review_stale_sha_never_posts_status(configured, tmp_path, monkeypatch):
+    import json
+
+    task_id, platform = _prepare_flow(configured, tmp_path, monkeypatch)
+    platform.failed = False
+    platform.review_status = None
+    _enable_review_role(configured)
+
+    async def changed_during_review(*args, **kwargs):
+        _git(platform.source, "switch", f"pa/{task_id}")
+        (platform.source / "hello.txt").write_text("unreviewed remote force push\n")
+        _git(platform.source, "add", "--all")
+        _git(
+            platform.source,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@localhost",
+            "commit",
+            "-m",
+            "late-update",
+        )
+        return (
+            0,
+            json.dumps(
+                {
+                    "issues": [],
+                    "verdict": "approve",
+                    "summary": "looks fine",
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr("pa.ci.executor.run_process", changed_during_review)
+    worker = Worker(configured, configured.config_dir, engines={"fake": FakeCodeEngine()})
+    assert asyncio.run(worker.once())["status"] == "awaiting_ci"
+    assert asyncio.run(worker.once()) is None
+    assert platform.status_updates == [] and platform.merges == []
+    with configured.engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM reviews")).scalar_one() == 0

@@ -494,6 +494,16 @@ class CodeExecutor:
             if pr is None or pr.state != "open" or not pr.sha or pr.sha != head:
                 return None  # Missing/stale PR cannot be treated as delivered.
             checks = await adapter.get_checks(task["repo"], pr)
+            # PRD K4/K6: a trusted coordinator invokes a different review
+            # engine; absence of a review cannot be treated as CI success.
+            if "pa/ai-review" in entry.required_checks and not any(
+                check["context"] == "pa/ai-review" for check in checks.contexts
+            ):
+                from pa.ci.executor import review_pr
+
+                return await review_pr(
+                    self.facade, config, self.config_dir, task, pr, recorded, adapter
+                )
             checks.required = entry.required_checks
             latest = {item["context"]: item["state"] for item in checks.contexts}
             if any(latest.get(name) in ("failure", "error") for name in checks.required):

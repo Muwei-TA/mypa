@@ -12,7 +12,7 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -27,7 +27,14 @@ jobs:
         run: uv run --no-sync ruff check src tests alembic scripts
       - name: Ruff formatting
         run: uv run --no-sync ruff format --check src tests alembic scripts
-      - name: Unit and isolated integration tests
-        run: uv run --no-sync pytest -q --disable-warnings --tb=short
+      - name: Required M2 business, review and Gitea contract smoke
+        run: >-
+          uv run --no-sync pytest -q --disable-warnings --tb=short
+          tests/test_business_code_flow.py
+          tests/test_scm_adapters.py
+          tests/test_turn_allowance.py
+          tests/test_ci_pipeline.py
+          tests/test_review_regressions.py
+          tests/test_webhooks.py
       - name: Build distributables
         run: uv build

@@ -266,7 +266,7 @@ def test_native_cli_receives_remaining_limit(tmp_path, adapter):
     )
     if adapter is HermesCLI:
         assert env["HERMES_MAX_ITERATIONS"] == "2"
-        assert command[command.index("--max-turns") + 1] == "2"
+        assert "--max-turns" not in command
     else:
         assert command[command.index("--max-turns") + 1] == "2"
 
