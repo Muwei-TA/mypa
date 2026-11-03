@@ -44,6 +44,7 @@ def record_review(
     tokens: int,
     task_tokens: int,
     same_model_fallback: bool = False,
+    head_sha: str | None = None,
 ) -> str:
     review_id = new_id()
     connection.execute(
@@ -61,7 +62,12 @@ def record_review(
             "fallback": int(same_model_fallback),
             "verdict": result.get("verdict"),
             "issues": json.dumps(
-                {"issues": result.get("issues", []), "severity": result.get("severity")},
+                {
+                    "issues": result.get("issues", []),
+                    "severity": result.get("severity"),
+                    "head_sha": head_sha,
+                    "summary": result.get("summary", ""),
+                },
                 ensure_ascii=False,
             ),
             "ratio": token_ratio(task_tokens, tokens),
@@ -73,7 +79,7 @@ def record_review(
 
 async def write_review_status(adapter, repo: str, sha: str, result: dict) -> None:
     """pa/ai-review commit status (K6): success only on approve/comment."""
-    state = "success" if result["verdict"] == "approve" else "failure"
+    state = "success" if result["verdict"] in {"approve", "comment"} else "failure"
     await adapter.set_status(
         repo,
         sha,

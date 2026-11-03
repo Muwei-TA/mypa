@@ -103,6 +103,9 @@ class CodeExecutor:
         patch = _git(workspace, "diff", base, "HEAD")
         head = _git(workspace, "rev-parse", "HEAD").strip()
         names = _git(workspace, "diff", "--numstat", base, "HEAD")
+        deleted_paths = set(
+            _git(workspace, "diff", "--diff-filter=D", "--name-only", base, "HEAD").splitlines()
+        )
         files = []
         for line in names.splitlines():
             added, removed, name = line.split("\t", 2)
@@ -111,7 +114,7 @@ class CodeExecutor:
                     "path": name,
                     "added": int(added) if added.isdigit() else 200,
                     "removed": int(removed) if removed.isdigit() else 200,
-                    "change_type": "changed",
+                    "change_type": "removed" if name in deleted_paths else "changed",
                 }
             )
         diff = Diff(files, sum(f["added"] for f in files), sum(f["removed"] for f in files))
@@ -168,9 +171,17 @@ class CodeExecutor:
 
         if not entry.agent_token:
             raise PAError("SCM agent token is not configured", "code_setup_failed")
-        identities = {"agent": Identity("agent", resolve(entry.agent_token))}
+        agent_secret = resolve(entry.agent_token)
+        identities = {"agent": Identity("agent", agent_secret)}
         if entry.merger_token:
-            identities["merger"] = Identity("merger", resolve(entry.merger_token))
+            import hmac
+
+            merger_secret = resolve(entry.merger_token)
+            # A different reference may still resolve to the same credential.
+            # Never allow such an alias to defeat the D17 identity boundary.
+            if hmac.compare_digest(agent_secret, merger_secret):
+                raise PAError("SCM agent and merger tokens must differ", "code_setup_failed")
+            identities["merger"] = Identity("merger", merger_secret)
         url = entry.api_url or ("https://api.github.com" if entry.scm == "github" else "")
         if not url:
             raise PAError("Gitea api_url is required", "code_setup_failed")
@@ -209,7 +220,8 @@ class CodeExecutor:
                         "INSERT INTO pull_requests(id,task_id,scm,repo,number,url,head,base,"
                         "ci_stage,risk_final) VALUES(:id,:task,:scm,:repo,:number,:url,:head,"
                         ":base,'full_check',:risk) ON CONFLICT(scm,repo,number) DO UPDATE SET "
-                        "ci_stage='full_check',risk_final=excluded.risk_final"
+                        "ci_stage='full_check',risk_final=excluded.risk_final,"
+                        "head=excluded.head,base=excluded.base"
                     ),
                     {
                         "id": new_id(),
@@ -223,6 +235,14 @@ class CodeExecutor:
                         "risk": receipt.risk,
                     },
                 )
+            with transaction(self.facade.engine) as c:
+                from pa.hub.subscriptions import subscribe
+
+                subscribe(
+                    c,
+                    task_id=task["id"],
+                    thread_ref=f"{entry.scm}:{task['repo']}:pulls:{pr.number}",
+                )
             if pr.url:
                 receipt.artifacts.append(Artifact(type="pr", ref=pr.url))
             return receipt, True
@@ -230,21 +250,242 @@ class CodeExecutor:
             if adapter.client._client:
                 await adapter.client._client.aclose()
 
+    def _has_approval(self, connection, task_id, head_sha, *, kind="merge_review"):
+        """An old decision must not authorize a new, unreviewed revision."""
+        rows = connection.execute(
+            text(
+                "SELECT reason_json FROM decisions WHERE task_id=:task AND "
+                "kind=:kind AND status='answered' AND answer='approve'"
+            ),
+            {"task": task_id, "kind": kind},
+        ).scalars()
+        import json
+
+        for value in rows:
+            if value and json.loads(value).get("head_sha") == head_sha:
+                return True
+        return False
+
+    async def _finish_delivery(self, task, config, adapter, recorded):
+        """Resume merge -> release request -> verification without re-merging.
+
+        No release hook and no verification means 'merged only', explicitly
+        not a claim that a new production version is live.
+        """
+        import json
+
+        from pa.ci.hooks import release_hook, verify_hook
+        from pa.common import now
+
+        entry = config.code.repos[task["repo"]]
+        merged_sha = recorded["merged_sha"]
+        if not merged_sha:
+            # A squash/rebase produces a new commit that is NOT the PR head.
+            # Do not trigger a deployment or mark this delivered until Gitea
+            # supplies the actual merge commit SHA.
+            return {"task_id": task["id"], "status": "awaiting_ci", "delivery": "merge_sha_unknown"}
+        stage = recorded["ci_stage"]
+        if stage == "merged":
+            if entry.release_hook != "none":
+                with transaction(self.facade.engine) as c:
+                    current = (
+                        c.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                        .mappings()
+                        .one()
+                    )
+                    if current["status"] != "awaiting_ci":
+                        return None
+                    release_auto = recorded["merge_action"] in {
+                        "auto_release",
+                        "confirm_merge_and_release",
+                    }
+                    approved = self._has_approval(c, task["id"], merged_sha, kind="release_review")
+                    if not release_auto and not approved:
+                        transition(
+                            c,
+                            task["id"],
+                            "awaiting_decision",
+                            current["version"],
+                            [Reason(code="release_requires_owner")],
+                        )
+                        create_decision(
+                            c,
+                            task_id=task["id"],
+                            kind="release_review",
+                            question="PR 已合并，是否触发此版本的发布流程？",
+                            recommend="approve",
+                            options=["approve", "take_over"],
+                            expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
+                            reason_json=json.dumps({"head_sha": merged_sha}),
+                        )
+                        return {
+                            "task_id": task["id"],
+                            "status": "awaiting_decision",
+                            "delivery": "release_approval",
+                        }
+                await release_hook(
+                    entry.release_hook,
+                    adapter=adapter,
+                    repo=task["repo"],
+                    sha=merged_sha,
+                    workflow=entry.release_workflow,
+                    ref=entry.base,
+                )
+                with transaction(self.facade.engine) as c:
+                    c.execute(
+                        text(
+                            "UPDATE pull_requests SET ci_stage='released' "
+                            "WHERE id=:id AND ci_stage='merged'"
+                        ),
+                        {"id": recorded["id"]},
+                    )
+                stage = "released"
+        verified = False
+        if stage in ("merged", "released") and entry.verify_hook != "none":
+            mirror = None
+            if entry.verify_hook == "version_endpoint":
+                from pa.workspace.mirror import ensure_mirror
+
+                # The mirror must contain the actual merge commit and the
+                # deployed live ref. Refresh it on each polling attempt.
+                mirror = await asyncio.to_thread(
+                    ensure_mirror,
+                    config.main.data_path(self.config_dir),
+                    entry.scm,
+                    task["repo"],
+                    entry.remote,
+                )
+            outcome = await verify_hook(
+                entry.verify_hook,
+                args={
+                    "url": entry.verify_url,
+                    "status": entry.verify_status,
+                    "keyword": entry.verify_keyword,
+                },
+                mirror=mirror,
+                merged_sha=merged_sha,
+                attempts=1,  # polling worker retries instead of blocking 10 minutes
+            )
+            if not outcome["verified"]:
+                return {
+                    "task_id": task["id"],
+                    "status": "awaiting_ci",
+                    "delivery": "verification_pending",
+                }
+            verified = True
+            with transaction(self.facade.engine) as c:
+                c.execute(
+                    text(
+                        "UPDATE pull_requests SET ci_stage='verified',verified_at=:at,"
+                        "live_sha=:live WHERE id=:id"
+                    ),
+                    {"at": now(), "id": recorded["id"], "live": outcome.get("live_sha")},
+                )
+        elif stage == "verified":
+            verified = True
+        with transaction(self.facade.engine) as c:
+            current = (
+                c.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                .mappings()
+                .one()
+            )
+            if current["status"] != "awaiting_ci":
+                return None
+            for status in ("succeeded", "judged", "closed"):
+                current = transition(
+                    c,
+                    task["id"],
+                    status,
+                    current["version"],
+                    [
+                        Reason(
+                            code="live_version_verified"
+                            if verified and entry.verify_hook == "version_endpoint"
+                            else "release_http_verified"
+                            if verified
+                            else "pr_merged_no_verification"
+                        )
+                    ],
+                )
+        return {"task_id": task["id"], "status": "closed", "release_verified": verified}
+
+    def _on_check_failure(self, task, config, pr, checks):
+        """A failed required check returns the same worktree to the Agent.
+
+        The first two failed rounds retry automatically. The third requires
+        the owner's decision. Pending/missing checks never trigger retries.
+        """
+        import json
+
+        with transaction(self.facade.engine) as c:
+            current = (
+                c.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                .mappings()
+                .one()
+            )
+            if current["status"] != "awaiting_ci":
+                return None
+            attempt = current["fix_round"] + 1
+            at_limit = attempt >= config.main.limits.max_fix_rounds
+            c.execute(
+                text("UPDATE tasks SET fix_round=:round WHERE id=:id"),
+                {"id": task["id"], "round": attempt},
+            )
+            reason = [
+                Reason(
+                    code="ci_check_failed",
+                    values={
+                        "sha": pr.sha,
+                        "round": attempt,
+                        "failed_checks": [
+                            name
+                            for name in checks.required
+                            if any(
+                                item["context"] == name and item["state"] in ("failure", "error")
+                                for item in checks.contexts
+                            )
+                        ],
+                    },
+                )
+            ]
+            updated = transition(
+                c,
+                task["id"],
+                "awaiting_decision" if at_limit else "queued",
+                current["version"],
+                reason,
+            )
+            c.execute(
+                text("UPDATE pull_requests SET ci_stage=:stage WHERE task_id=:id"),
+                {"stage": "needs_owner" if at_limit else "fix_requested", "id": task["id"]},
+            )
+            if at_limit:
+                create_decision(
+                    c,
+                    task_id=task["id"],
+                    kind="code_fix_limit",
+                    question="代码检查连续失败，是否再给一次修复机会？",
+                    recommend="take_over",
+                    options=["one_more_round", "take_over"],
+                    expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
+                    reason_json=json.dumps({"head_sha": pr.sha, "fix_round": attempt}),
+                )
+        return {"task_id": task["id"], "status": updated["status"], "fix_round": attempt}
+
     async def poll(self, task, config):
+        import json
+
         entry = config.code.repos[task["repo"]]
         adapter = self.adapter(entry)
         try:
-            pr = await adapter.find_pr_by_branch(task["repo"], f"pa/{task['id']}")
-            if pr is None:
-                return None  # Never infer delivery from a missing/open-PR listing.
-            checks = await adapter.get_checks(task["repo"], pr)
-            checks.required = entry.required_checks
-            if not checks.all_required_passed:
-                return None
             with self.facade.engine.connect() as c:
                 recorded = (
                     c.execute(
-                        text("SELECT * FROM pull_requests WHERE task_id=:id"), {"id": task["id"]}
+                        text(
+                            "SELECT * FROM pull_requests WHERE task_id=:id "
+                            "ORDER BY rowid DESC LIMIT 1"
+                        ),
+                        {"id": task["id"]},
                     )
                     .mappings()
                     .first()
@@ -252,40 +493,83 @@ class CodeExecutor:
                 head = c.execute(
                     text("SELECT head_sha FROM code_workspaces WHERE task_id=:id"),
                     {"id": task["id"]},
-                ).scalar_one()
-            if recorded is None or pr.sha != head:
+                ).scalar_one_or_none()
+            if recorded is None or not head:
+                return None
+            if recorded["ci_stage"] in {"merged", "released", "verified"}:
+                return await self._finish_delivery(task, config, adapter, recorded)
+            pr = await adapter.find_pr_by_branch(task["repo"], f"pa/{task['id']}")
+            if pr is None or pr.state != "open" or not pr.sha or pr.sha != head:
+                return None  # Missing/stale PR cannot be treated as delivered.
+            checks = await adapter.get_checks(task["repo"], pr)
+            # PRD K4/K6: a trusted coordinator invokes a different review
+            # engine; absence of a review cannot be treated as CI success.
+            if "pa/ai-review" in entry.required_checks and not any(
+                check["context"] == "pa/ai-review" for check in checks.contexts
+            ):
+                from pa.ci.executor import review_pr
+
+                return await review_pr(
+                    self.facade, config, self.config_dir, task, pr, recorded, adapter
+                )
+            checks.required = entry.required_checks
+            latest = {item["context"]: item["state"] for item in checks.contexts}
+            if any(latest.get(name) in ("failure", "error") for name in checks.required):
+                return self._on_check_failure(task, config, pr, checks)
+            if not checks.all_required_passed:
                 return None
             verdict = merge_gate(
                 config.merge_policy, repo=task["repo"], risk=recorded["risk_final"], checks=checks
             )
-            # Releases remain an explicit owner action. Only the policy's
-            # auto_merge_notify cell is an implemented automatic delivery here.
+            if (
+                verdict["action"] == "blocked"
+                and verdict["reason"] == "merge policy is not configured"
+            ):
+                return None  # Never authorize a merge without a policy.
             with transaction(self.facade.engine) as c:
                 current = (
-                    c.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
+                    c.execute(
+                        text("SELECT * FROM tasks WHERE id=:id"),
+                        {"id": task["id"]},
+                    )
                     .mappings()
                     .one()
                 )
                 if current["status"] != "awaiting_ci":
                     return None
-                if verdict["action"] != "auto_merge_notify" or not entry.merger_token:
+                approved = self._has_approval(c, task["id"], head)
+                auto = (
+                    verdict["action"] in {"auto_release", "auto_merge_notify"}
+                    and recorded["risk_final"] != "high"
+                )
+                if not entry.merger_token or (not auto and not approved):
                     transition(
                         c,
                         task["id"],
                         "awaiting_decision",
                         current["version"],
-                        [Reason(code="merge_requires_owner")],
+                        [Reason(code="merge_requires_owner", values={"sha": head})],
                     )
+                    can_merge = bool(entry.merger_token)
                     create_decision(
                         c,
                         task_id=task["id"],
-                        kind="merge_review",
-                        question="PR 检查已通过，请审阅并在平台完成合并或接手。",
-                        recommend="take_over",
-                        options=["take_over", "retry"],
+                        kind="merge_review" if can_merge else "merge_handoff",
+                        question=(
+                            "检查通过：是否批准合并此版本的 PR？"
+                            if can_merge
+                            else "缺少独立合并身份，请在平台接手此 PR。"
+                        ),
+                        recommend="approve" if can_merge else "take_over",
+                        options=["approve", "take_over", "retry"]
+                        if can_merge
+                        else ["take_over", "retry"],
                         expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
+                        reason_json=json.dumps({"head_sha": head, "pr_number": pr.number}),
                     )
                     return {"task_id": task["id"], "status": "awaiting_decision"}
+            # Approval is tied to this immutable head; platform protections
+            # must still refuse stale or failing checks at the merge endpoint.
             merged = await adapter.merge(task["repo"], pr, "squash")
             if not merged.merged:
                 return None
@@ -297,19 +581,20 @@ class CodeExecutor:
                 )
                 if current["status"] != "awaiting_ci":
                     return None
-                for stage in ("succeeded", "judged", "closed"):
-                    current = transition(
-                        c,
-                        task["id"],
-                        stage,
-                        current["version"],
-                        [Reason(code="pr_merged_no_release")],
-                    )
                 c.execute(
-                    text("UPDATE pull_requests SET ci_stage='merged',merged_sha=:sha WHERE id=:id"),
-                    {"sha": merged.sha, "id": recorded["id"]},
+                    text(
+                        "UPDATE pull_requests SET ci_stage='merged',merged_sha=:sha,"
+                        "merge_action=:action WHERE id=:id"
+                    ),
+                    {"sha": merged.sha, "action": verdict["action"], "id": recorded["id"]},
                 )
-            return {"task_id": task["id"], "status": "closed"}
+            refreshed = {
+                **recorded,
+                "ci_stage": "merged",
+                "merged_sha": merged.sha,
+                "merge_action": verdict["action"],
+            }
+            return await self._finish_delivery(task, config, adapter, refreshed)
         finally:
             if adapter.client._client:
                 await adapter.client._client.aclose()

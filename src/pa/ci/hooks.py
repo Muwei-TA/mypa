@@ -8,6 +8,7 @@ in the mirror; retries every 30 seconds for up to 10 minutes. The result is
 written back as the pa/verify commit status; failures go to the owner.
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -67,6 +68,29 @@ def version_contains(mirror: Path, merged_sha: str, live_sha: str) -> bool:
     return result.returncode == 0
 
 
+async def fetch_live_sha(url: str) -> str | None:
+    """Read the deployed Git SHA, never trust HTTP 200 alone as deployment proof.
+
+    Accepted responses: JSON object with `sha`, `commit`, or `git_sha` (40 or
+    64 lowercase/uppercase hex characters). A malformed response fails closed.
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = next((data[k] for k in ("sha", "commit", "git_sha") if k in data), None)
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
+        return None
+    return value.lower()
+
+
 async def verify_hook(
     kind: str,
     *,
@@ -89,11 +113,13 @@ async def verify_hook(
             raise PAError("version_endpoint requires the mirror path")
         import asyncio
 
-        for _ in range(max(1, attempts)):
-            if version_contains(mirror, merged_sha, live_sha):
-                return {"verified": True, "hook": "version_endpoint"}
-            await asyncio.sleep(interval_s)
-        return {"verified": False, "hook": "version_endpoint"}
+        for index in range(max(1, attempts)):
+            current_sha = await fetch_live_sha(args["url"]) if args.get("url") else live_sha
+            if current_sha and version_contains(mirror, merged_sha, current_sha):
+                return {"verified": True, "hook": "version_endpoint", "live_sha": current_sha}
+            if index + 1 < max(1, attempts):
+                await asyncio.sleep(interval_s)
+        return {"verified": False, "hook": "version_endpoint", "live_sha": None}
     if kind == "script":
         result = subprocess.run(
             ["bash", "-c", args.get("script", "")],

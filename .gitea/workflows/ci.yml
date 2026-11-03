@@ -1,0 +1,40 @@
+name: PA v1.1 Gitea continuous validation
+
+on:
+  push:
+    branches:
+      - codex/acceptance-hardening-20261103
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.13.5'
+          enable-cache: true
+      - name: Install pinned Python runtime and dependencies
+        run: uv sync --frozen --python 3.12 --group dev
+      - name: Ruff lint
+        run: uv run --no-sync ruff check src tests alembic scripts
+      - name: Ruff formatting
+        run: uv run --no-sync ruff format --check src tests alembic scripts
+      - name: Required M2 business, review and Gitea contract smoke
+        run: >-
+          uv run --no-sync pytest -q --disable-warnings --tb=short
+          tests/test_business_code_flow.py
+          tests/test_scm_adapters.py
+          tests/test_turn_allowance.py
+          tests/test_ci_pipeline.py
+          tests/test_review_regressions.py
+          tests/test_webhooks.py
+      - name: Build distributables
+        run: uv build

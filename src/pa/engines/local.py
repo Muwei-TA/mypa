@@ -194,10 +194,10 @@ class HermesCLI(LocalCLI):
     adapter = "hermes_cli"
 
     def command(self, request):
+        # Hermes CLI does not accept --max-turns on its current entrypoint.
+        # Enforce its iteration cap via HERMES_MAX_ITERATIONS instead.
         cmd = self.config.command + [
             "--ignore-rules",
-            "--max-turns",
-            str(self.turn_limit(request)),
             "--toolsets",
             "clarify",
             "--reasoning",

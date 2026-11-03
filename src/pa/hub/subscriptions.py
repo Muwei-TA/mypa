@@ -76,6 +76,8 @@ def route(connection, config, *, thread_ref: str, actor: str, body: str) -> dict
         return {"action": "none", "reason": "no subscription"}
     if row["expires_at"] and row["expires_at"] < now():
         return {"action": "none", "reason": "subscription expired"}
+    if row["status"] == "cancelled":
+        return {"action": "none", "reason": "cancelled tasks cannot be resumed"}
     if is_bot(actor):
         if row["status"] in ("closed", "judged", "succeeded", "cancelled"):
             return {"action": "none", "reason": "bot cannot wake ended task"}

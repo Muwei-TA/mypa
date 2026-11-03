@@ -163,8 +163,10 @@ def gitea(identities):
         },
         {
             "method": "GET",
-            "url": "/repos/o/r/pulls/7/diff",
-            "response": {"files": [{"filename": "srca.py", "additions": 10, "deletions": 2}]},
+            "url": "/repos/o/r/pulls/7/files",
+            "response": [
+                {"filename": "srca.py", "status": "changed", "additions": 10, "deletions": 2}
+            ],
         },
         {
             "method": "GET",
@@ -174,7 +176,12 @@ def gitea(identities):
         {
             "method": "POST",
             "url": "/repos/o/r/pulls/7/merge",
-            "response": {"merged": True},
+            "response": {},
+        },
+        {
+            "method": "GET",
+            "url": "/repos/o/r/pulls/7",
+            "response": {"merged": True, "merge_commit_sha": "merged123"},
         },
         {"method": "POST", "url": "/repos/o/r/statuses/abc123", "response": {}},
         {
@@ -244,6 +251,8 @@ def test_merge_uses_merger_identity(platform, github, gitea, request):
     assert pr is not None and pr.number == 7
     result = asyncio.run(adapter.merge("o/r", pr, "squash"))
     assert result.merged and result.method == "squash"
+    if platform == "gitea":
+        assert result.sha == "merged123"
     merge_calls = [r for r in transport.requests if "merge" in r["url"]]
     assert merge_calls[0]["identity"] == "merger"
 
@@ -307,3 +316,47 @@ def test_missing_identity_raises():
     with pytest.raises(ScmError) as exc:
         client.identity("merger")
     assert exc.value.kind == "auth"
+
+
+def test_gitea_real_file_list_handles_deleted_risk(gitea):
+    from pa.ci.risk import hard_risk
+    from pa.config.schema import SEVEN_TAGS
+
+    adapter, transport = gitea
+    for route in transport.routes:
+        if route["method"] == "GET" and route["url"].endswith("/pulls/7/files"):
+            route["response"] = [
+                {
+                    "filename": "src/critical.py",
+                    "status": "deleted",
+                    "additions": 0,
+                    "deletions": 5,
+                }
+            ]
+    pr = asyncio.run(adapter.find_pr_by_branch("o/r", "pa/t1"))
+    diff = asyncio.run(adapter.get_diff("o/r", pr))
+    assert diff.files[0]["change_type"] == "removed"
+    assert hard_risk(diff, seven_tags=SEVEN_TAGS) == "high"
+    request = next(r for r in transport.requests if r["url"].endswith("/pulls/7/files"))
+    assert request["params"] == {"page": 1, "limit": 100}
+
+
+def test_gitea_merge_pins_head_and_uses_lowercase_strategy(gitea):
+    adapter, transport = gitea
+    pr = asyncio.run(adapter.find_pr_by_branch("o/r", "pa/t1"))
+    result = asyncio.run(adapter.merge("o/r", pr, "squash"))
+    assert result.merged and result.sha == "merged123"
+    call = next(req for req in transport.requests if req["url"].endswith("/pulls/7/merge"))
+    assert call["identity"] == "merger"
+    assert call["json"]["Do"] == "squash"
+    assert call["json"]["head_commit_id"] == "abc123"
+
+
+def test_gitea_merge_empty_success_without_confirmed_merge_fails_closed(gitea):
+    adapter, transport = gitea
+    for route in transport.routes:
+        if route["method"] == "GET" and route["url"] == "/repos/o/r/pulls/7":
+            route["response"] = {"merged": False, "merge_commit_sha": None}
+    pr = asyncio.run(adapter.find_pr_by_branch("o/r", "pa/t1"))
+    result = asyncio.run(adapter.merge("o/r", pr, "squash"))
+    assert result.merged is False and result.sha is None

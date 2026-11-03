@@ -51,28 +51,30 @@ class Worker:
                 return self._escalate_limit(task, saved["reason"], config)
             return await self._drive(task, None, saved["engine_id"], config, saved=saved)
         recover_expired(self.facade.engine)
+        # Check several PRs per tick: a slow/pending first PR must not starve
+        # another PR whose CI has already finished.
         with self.facade.engine.connect() as connection:
             waiting = (
                 connection.execute(
                     text(
                         "SELECT * FROM tasks WHERE status='awaiting_ci' "
-                        "ORDER BY enqueued_at LIMIT 1"
+                        "ORDER BY enqueued_at LIMIT 50"
                     )
                 )
                 .mappings()
-                .first()
+                .all()
             )
         if waiting:
             from pa.procs.code import CodeExecutor
 
-            try:
-                if outcome := await CodeExecutor(self.facade, self.config_dir).poll(
-                    dict(waiting), config
-                ):
-                    return outcome
-            except (PAError, OSError, ScmError):
-                # Keep the durable CI state for retry; never infer successful delivery.
-                pass
+            executor = CodeExecutor(self.facade, self.config_dir)
+            for task_waiting in waiting:
+                try:
+                    if outcome := await executor.poll(dict(task_waiting), config):
+                        return outcome
+                except (PAError, OSError, ScmError):
+                    # Keep the durable CI state for retry, never falsely close.
+                    continue
         for queued in self._queue_candidates():
             skill = load_skill(queued["skill_id"])
             role = self._engine_role(config, queued)
@@ -421,6 +423,60 @@ class Worker:
                                 {"id": task["id"]},
                             ).scalar_one()
                         )
+                    # User comments on subscribed Issue/PR threads become
+                    # untrusted additional task input, not new task authority.
+                    with self.facade.engine.connect() as c:
+                        references = (
+                            c.execute(
+                                text(
+                                    "SELECT reason_json FROM task_events WHERE task_id=:id "
+                                    "AND to_status IS NULL ORDER BY rowid DESC LIMIT 10"
+                                ),
+                                {"id": task["id"]},
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        comments = []
+                        for payload_json in reversed(references):
+                            for reason in json.loads(payload_json):
+                                if reason.get("code") != "context_added":
+                                    continue
+                                event_id = reason.get("values", {}).get("event_id")
+                                if not event_id:
+                                    continue
+                                raw = c.execute(
+                                    text("SELECT payload_json FROM events WHERE id=:id"),
+                                    {"id": event_id},
+                                ).scalar_one_or_none()
+                                if raw:
+                                    message = json.loads(raw).get("body", "")
+                                    if message:
+                                        comments.append(str(message)[:4000])
+                    if comments:
+                        content += "\n订阅线程中的补充要求：\n" + "\n".join(comments)
+                    # A repair round needs the failed CI context, not just
+                    # the original task. Persisted task events survive restart.
+                    with self.facade.engine.connect() as c:
+                        feedback = c.execute(
+                            text(
+                                "SELECT reason_json FROM task_events WHERE task_id=:id "
+                                "AND to_status='queued' ORDER BY rowid DESC LIMIT 1"
+                            ),
+                            {"id": task["id"]},
+                        ).scalar_one_or_none()
+                    if feedback:
+                        for reason in json.loads(feedback):
+                            if reason.get("code") == "ci_check_failed":
+                                values = reason.get("values", {})
+                                failed = json.dumps(
+                                    values.get("failed_checks", []), ensure_ascii=False
+                                )
+                                content += (
+                                    "\n本次是 CI 失败后的修复轮次。"
+                                    f"上轮失败检查：{failed}。"
+                                    "请重新检查代码并针对失败项修正；不要原样重复提交。"
+                                )
                     content += (
                         f"\n工作区：{workspace}\n只编辑此工作区的文件，不提交、不推送或创建 PR；"
                         "提交和平台操作由 PA 运行时完成。按真实改动输出回执。"
