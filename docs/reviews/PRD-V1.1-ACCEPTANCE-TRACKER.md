@@ -9,9 +9,9 @@ This is the repository's **live acceptance register**. Source of truth: `docs/de
 | M1 manual trigger → task → completion | PASS | `docs/reviews/2026-11-03-repairs.md`, real Mac Codex 2026-11-03 verification |
 | M1 resume / effect idempotency after forced kill | PARTIAL | Existing unit tests; need true external side-effect kill/restart test (#6) |
 | M1 rule / observe / constraints / budget | PARTIAL | Unit tests; proactive model assessor still TODO (#6) |
-| M2 real GitHub/Gitea Issue → PR | PARTIAL | `tests/test_business_code_flow.py` simulated platform; real Gitea pending (#5) |
+| M2 real GitHub/Gitea Issue → PR | PARTIAL | Real sandbox [Issue #1](https://git.muwei.xyz/muwei/pa-v11-acceptance-sandbox/issues/1) and [PR #2](https://git.muwei.xyz/muwei/pa-v11-acceptance-sandbox/pulls/2) created from an actual Mac PA/Codex patch; authenticated Git push/PR creation by PA itself is blocked (see live sandbox report, #5) |
 | M2 independent strict AI review, fail/repair/3-round cap | PARTIAL | Failure paths simulate `pa/ai-review`; no independent real reviewer in PR orchestration (#4) |
-| M2 mandatory `pa/ai-review` and `ci` platform branch protection | BLOCKED | Can check API when sandbox repo is available (#5) |
+| M2 mandatory `pa/ai-review` and `ci` platform branch protection | BLOCKED | Sandbox created; real Actions status contexts are pending; protection configuration + deny-merge tests still missing (#5) |
 | M2 SHA-bound approval, safe merge, no privilege bypass | PARTIAL | Simulated PR tests; real platform reject-bypass test pending (#5) |
 | M2 Issue/PR comment resumes original mandate | PARTIAL | Fake Gitea replay verified; real webhooks pending (#5) |
 | M2 release hook + deployed SHA ancestry verification | PARTIAL | Workflow dispatch + HTTP smoke simulated; `version_endpoint` now parses deployed SHA and checks Git ancestry in a refreshed mirror; real deployed service endpoint and real Gitea merge are pending (#5) |
@@ -34,3 +34,5 @@ This is the repository's **live acceptance register**. Source of truth: `docs/de
 - Use a dedicated, disposable **private** repository for Gitea acceptance. Do not enable auto-merge or auto-release on the production PA repository.
 - No GitHub/Gitea token values, passwords or webhook HMAC values belong in Git, issue bodies or test logs.
 - Any real merge or release must be preceded by verification that the target repo and target service are dedicated test assets.
+
+- `docs/reviews/2026-11-03-gitea-live-sandbox.md`: real, authenticated Gitea Issue/PR events with real Codex patch and CI queue; gap assessment.

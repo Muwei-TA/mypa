@@ -272,13 +272,10 @@ class CodeExecutor:
         entry = config.code.repos[task["repo"]]
         merged_sha = recorded["merged_sha"]
         if not merged_sha:
-            # Some SCM APIs acknowledge the merge without returning the
-            # resulting commit SHA. Never use a branch name as approval ID.
-            with self.facade.engine.connect() as c:
-                merged_sha = c.execute(
-                    text("SELECT head_sha FROM code_workspaces WHERE task_id=:id"),
-                    {"id": task["id"]},
-                ).scalar_one()
+            # A squash/rebase produces a new commit that is NOT the PR head.
+            # Do not trigger a deployment or mark this delivered until Gitea
+            # supplies the actual merge commit SHA.
+            return {"task_id": task["id"], "status": "awaiting_ci", "delivery": "merge_sha_unknown"}
         stage = recorded["ci_stage"]
         if stage == "merged":
             if entry.release_hook != "none":

@@ -14,7 +14,7 @@ from pa.scm.base import (
     RunRef,
     ScmAdapter,
 )
-from pa.scm.http import Client, verify_hmac
+from pa.scm.http import Client, ScmError, verify_hmac
 
 
 class GiteaAdapter(ScmAdapter):
@@ -80,22 +80,40 @@ class GiteaAdapter(ScmAdapter):
         )
 
     async def get_diff(self, repo: str, pr: PR) -> Diff:
-        data = await self.client.request("GET", f"/repos/{repo}/pulls/{pr.number}/diff")
+        """Gitea /pulls/{n}/files returns a JSON array, not /diff JSON.
+
+        Fetch all pages so large PRs cannot evade the changed-line or
+        sensitive-path risk threshold by putting files beyond page one.
+        """
         files = []
-        for f in data.get("files", []):
-            files.append(
-                {
-                    "path": f["filename"],
-                    "added": f.get("additions", 0),
-                    "removed": f.get("deletions", 0),
-                    "change_type": "changed",
-                    "patch": f.get("patch", ""),
-                }
+        for page in range(1, 102):
+            batch = await self.client.request(
+                "GET",
+                f"/repos/{repo}/pulls/{pr.number}/files",
+                params={"page": page, "limit": 100},
             )
+            if not isinstance(batch, list):
+                raise ScmError("Gitea PR files response must be an array", "permanent")
+            for item in batch:
+                state = item.get("status", "changed")
+                change_type = "removed" if state in {"deleted", "removed"} else state
+                files.append(
+                    {
+                        "path": item["filename"],
+                        "added": int(item.get("additions", 0)),
+                        "removed": int(item.get("deletions", 0)),
+                        "change_type": change_type,
+                        "patch": item.get("patch", ""),
+                    }
+                )
+            if len(batch) < 100:
+                break
+        else:
+            raise ScmError("Gitea PR has too many changed files to assess", "permanent")
         return Diff(
             files=files,
-            additions=sum(f["added"] for f in files),
-            deletions=sum(f["removed"] for f in files),
+            additions=sum(item["added"] for item in files),
+            deletions=sum(item["removed"] for item in files),
         )
 
     async def get_checks(self, repo: str, pr: PR) -> CheckSummary:
@@ -128,14 +146,24 @@ class GiteaAdapter(ScmAdapter):
     async def merge(
         self, repo: str, pr: PR, method: Literal["squash", "merge", "rebase"]
     ) -> MergeResult:
-        data = await self.client.request(
+        # Gitea accepts lowercase merge strategies and normally replies with
+        # an empty 200. A successful response is NOT a merge-SHA proof.
+        # Pin the expected PR head to reject concurrent unreviewed updates.
+        await self.client.request(
             "POST",
             f"/repos/{repo}/pulls/{pr.number}/merge",
             identity="merger",
-            json_body={"Do": method.title(), "merge_title_field": pr.title},
+            json_body={
+                "Do": method,
+                "head_commit_id": pr.sha,
+                "merge_title_field": pr.title,
+            },
         )
+        observed = await self.client.request("GET", f"/repos/{repo}/pulls/{pr.number}")
         return MergeResult(
-            merged=bool(data.get("merged", True)), sha=data.get("sha"), method=method
+            merged=observed.get("merged") is True,
+            sha=observed.get("merge_commit_sha"),
+            method=method,
         )
 
     async def dispatch_workflow(
