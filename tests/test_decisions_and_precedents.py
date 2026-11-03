@@ -171,14 +171,22 @@ def test_decision_callback_full_flow(configured):
         )
     assert result["ok"], result
     with transaction(configured.engine) as c:
-        row = c.execute(
-            text("SELECT status,answer,save_as_precedent FROM decisions WHERE id=:id"),
-            {"id": decision_id},
-        ).mappings().one()
-        event = c.execute(
-            text("SELECT type,category,status FROM events WHERE id=:eid"),
-            {"eid": result["event_id"]},
-        ).mappings().one()
+        row = (
+            c.execute(
+                text("SELECT status,answer,save_as_precedent FROM decisions WHERE id=:id"),
+                {"id": decision_id},
+            )
+            .mappings()
+            .one()
+        )
+        event = (
+            c.execute(
+                text("SELECT type,category,status FROM events WHERE id=:eid"),
+                {"eid": result["event_id"]},
+            )
+            .mappings()
+            .one()
+        )
     assert row["status"] == "answered" and row["answer"] == "approve"
     assert row["save_as_precedent"] == "decided"
     assert event["type"] == "decision.submitted" and event["category"] == "decision"
@@ -202,48 +210,78 @@ def test_decision_callback_rejects(configured):
     # wrong signature
     with transaction(configured.engine) as c:
         bad = handle_callback(
-            c, body=body, signature="deadbeef", secret=secret,
-            owner_open_id="ou_owner", clicker_open_id="ou_owner",
-            config=configured.config, task_id=task,
+            c,
+            body=body,
+            signature="deadbeef",
+            secret=secret,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_owner",
+            config=configured.config,
+            task_id=task,
         )
     assert bad == {"ok": False, "reason": "bad_signature"}
     # not owner
     signature = sign_callback(secret, body)
     with transaction(configured.engine) as c:
         stranger = handle_callback(
-            c, body=body, signature=signature, secret=secret,
-            owner_open_id="ou_owner", clicker_open_id="ou_stranger",
-            config=configured.config, task_id=task,
+            c,
+            body=body,
+            signature=signature,
+            secret=secret,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_stranger",
+            config=configured.config,
+            task_id=task,
         )
     assert stranger["ok"] is False and stranger["reason"] == "not_owner"
     # replay: same card clicked twice
     with transaction(configured.engine) as c:
         first = handle_callback(
-            c, body=body, signature=signature, secret=secret,
-            owner_open_id="ou_owner", clicker_open_id="ou_owner",
-            config=configured.config, task_id=task,
+            c,
+            body=body,
+            signature=signature,
+            secret=secret,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_owner",
+            config=configured.config,
+            task_id=task,
         )
     assert first["ok"]
     with transaction(configured.engine) as c:
         replay = handle_callback(
-            c, body=body, signature=signature, secret=secret,
-            owner_open_id="ou_owner", clicker_open_id="ou_owner",
-            config=configured.config, task_id=task,
+            c,
+            body=body,
+            signature=signature,
+            secret=secret,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_owner",
+            config=configured.config,
+            task_id=task,
         )
     assert replay["ok"] is False and replay["reason"] == "duplicate_submission"
     # expired
     with transaction(configured.engine) as c:
         expired_id = create_decision(
-            c, task_id=task, kind="k", question="过期？", recommend="approve",
-            options=["approve"], expires_at=(datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+            c,
+            task_id=task,
+            kind="k",
+            question="过期？",
+            recommend="approve",
+            options=["approve"],
+            expires_at=(datetime.now(UTC) - timedelta(hours=1)).isoformat(),
         )
     body2 = _callback_body(expired_id, "approve")
     sig2 = sign_callback(secret, body2)
     with transaction(configured.engine) as c:
         late = handle_callback(
-            c, body=body2, signature=sig2, secret=secret,
-            owner_open_id="ou_owner", clicker_open_id="ou_owner",
-            config=configured.config, task_id=task,
+            c,
+            body=body2,
+            signature=sig2,
+            secret=secret,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_owner",
+            config=configured.config,
+            task_id=task,
         )
     assert late["ok"] is False and late["reason"] == "expired"
     with transaction(configured.engine) as c:
@@ -268,15 +306,23 @@ def test_precedent_add_search_and_apply(configured):
     assert hit["status"] == "hit" and hit["hit"].precedent.id == pid
     with transaction(configured.engine) as c:
         decision_id = create_decision(
-            c, task_id=task, kind="release", question="周五晚上要不要做发布？",
-            recommend="approve", options=["approve", "reject"],
+            c,
+            task_id=task,
+            kind="release",
+            question="周五晚上要不要做发布？",
+            recommend="approve",
+            options=["approve", "reject"],
             expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
         )
         apply_precedent(c, hit=hit["hit"], decision_id=decision_id)
-        row = c.execute(
-            text("SELECT status,answer,precedent_id,reason_json FROM decisions WHERE id=:id"),
-            {"id": decision_id},
-        ).mappings().one()
+        row = (
+            c.execute(
+                text("SELECT status,answer,precedent_id,reason_json FROM decisions WHERE id=:id"),
+                {"id": decision_id},
+            )
+            .mappings()
+            .one()
+        )
     assert row["status"] == "precedent" and row["answer"] == "approve"
     assert row["precedent_id"] == pid and "precedent_applied" in row["reason_json"]
 
@@ -294,15 +340,17 @@ def test_precedent_scope_and_never_auto(configured):
 def test_precedent_rejected_answers_reject(configured):
     task = _task(configured, "pc-3")
     with transaction(configured.engine) as c:
-        pid = _add_precedent(
-            c, "引入新框架", "不再引入新的前端框架", kind="precedent_rejected"
-        )
+        pid = _add_precedent(c, "引入新框架", "不再引入新的前端框架", kind="precedent_rejected")
         hit = check_precedent(c, question="要不要引入新的前端框架？")
     assert hit["status"] == "hit"
     with transaction(configured.engine) as c:
         decision_id = create_decision(
-            c, task_id=task, kind="tech_choice", question="要不要引入新的前端框架？",
-            recommend="reject", options=["approve", "reject"],
+            c,
+            task_id=task,
+            kind="tech_choice",
+            question="要不要引入新的前端框架？",
+            recommend="reject",
+            options=["approve", "reject"],
             expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
         )
         apply_precedent(c, hit=hit["hit"], decision_id=decision_id)
@@ -317,8 +365,11 @@ def test_precedent_md_mirror_roundtrip(configured):
     with transaction(configured.engine) as c:
         _add_precedent(c, "文档改动自动合并", "docs-only 且 <50 行直接合", scope="sandbox")
         _add_precedent(
-            c, "夜里的重构", "夜里不动架构",
-            kind="precedent_rejected", expires_at="2027-01-01T00:00:00+00:00",
+            c,
+            "夜里的重构",
+            "夜里不动架构",
+            kind="precedent_rejected",
+            expires_at="2027-01-01T00:00:00+00:00",
         )
     with transaction(configured.engine) as c:
         exported = export_md(c)
@@ -345,8 +396,13 @@ def test_decision_timeout_suspends_and_reminds_once(configured):
     past = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
     with transaction(configured.engine) as c:
         decision_id = create_decision(
-            c, task_id=task, kind="merge_confirm", question="是否合并？",
-            recommend="approve", options=["approve", "reject"], expires_at=past,
+            c,
+            task_id=task,
+            kind="merge_confirm",
+            question="是否合并？",
+            recommend="approve",
+            options=["approve", "reject"],
+            expires_at=past,
         )
     with transaction(configured.engine) as c:
         expired = expire_due(c, config=configured.config)
@@ -386,15 +442,18 @@ def test_decision_timeout_skips_terminal_tasks(configured):
     past = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
     with transaction(configured.engine) as c:
         create_decision(
-            c, task_id=task, kind="merge_confirm", question="关了吗？",
-            recommend="approve", options=["approve"], expires_at=past,
+            c,
+            task_id=task,
+            kind="merge_confirm",
+            question="关了吗？",
+            recommend="approve",
+            options=["approve"],
+            expires_at=past,
         )
         c.execute(text("UPDATE tasks SET status='closed' WHERE id=:id"), {"id": task})
     with transaction(configured.engine) as c:
         expired = expire_due(c, config=configured.config)
     assert expired and expired[0]["task_suspended"] is False
     with transaction(configured.engine) as c:
-        status = c.execute(
-            text("SELECT status FROM tasks WHERE id=:id"), {"id": task}
-        ).scalar_one()
+        status = c.execute(text("SELECT status FROM tasks WHERE id=:id"), {"id": task}).scalar_one()
     assert status == "closed"

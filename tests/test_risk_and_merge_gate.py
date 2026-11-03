@@ -39,9 +39,7 @@ def test_high_dependency_change():
 def test_high_sensitive_paths_and_deletion():
     assert hard_risk(_diff(["src/auth/login.py"]), seven_tags=SEVEN_TAGS) == "high"
     assert hard_risk(_diff(["src/secrets.py"]), seven_tags=SEVEN_TAGS) == "high"
-    assert (
-        hard_risk(_diff([".github/workflows/ci.yml"]), seven_tags=SEVEN_TAGS) == "high"
-    )
+    assert hard_risk(_diff([".github/workflows/ci.yml"]), seven_tags=SEVEN_TAGS) == "high"
     assert hard_risk(_diff(["src/a.py"], change_type="removed"), seven_tags=SEVEN_TAGS) == "high"
 
 

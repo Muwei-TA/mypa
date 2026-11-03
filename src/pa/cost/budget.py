@@ -64,18 +64,83 @@ _SCOPE_COLUMNS = {
 
 def _scope_totals(connection, scope: str, scope_id: str | None, period: str) -> float:
     row = connection.execute(
-        text("""
+        text(
+            """
         SELECT COALESCE(SUM(cost_cny),0) FROM cost_ledger
         WHERE est=0 AND at >= date('now', :start)
           AND (:sid IS NULL OR
                (scope_column = :sid))
-    """.replace("scope_column", _SCOPE_COLUMNS[scope])),
+    """.replace("scope_column", _SCOPE_COLUMNS[scope])
+        ),
         {
-            "start": "-1 day" if period == "day" else "-1 month",
+            "start": "start of day" if period == "day" else "start of month",
             "sid": scope_id,
         },
     ).first()
-    return float(row[0]) if row else 0.0
+    reserved = connection.execute(
+        text(
+            (
+                "SELECT COALESCE(SUM(cost_cny),0) FROM budget_reservations "
+                "WHERE at>=date('now',:start) AND (:sid IS NULL OR scope_column=:sid)"
+            ).replace("scope_column", _SCOPE_COLUMNS[scope])
+        ),
+        {"sid": scope_id, "start": "start of day" if period == "day" else "start of month"},
+    ).scalar_one()
+    return (float(row[0]) if row else 0.0) + float(reserved)
+
+
+def quote(price, *, tokens=0, input_tokens=None, output_tokens=None, calls=1, seconds=0):
+    """Return CNY or None when no usable price is configured.
+
+    Before a token call use the larger unit price for the entire remaining
+    allowance. This is a conservative reservation, not streaming hard billing.
+    """
+    mode = price.get("mode", "token")
+    if mode == "per_call" and "cny" in price:
+        return calls * price["cny"]
+    if mode == "duration" and "cny_per_min" in price:
+        return seconds * price["cny_per_min"] / 60
+    if mode == "token" and all(k in price for k in ("input_per_mtok_cny", "output_per_mtok_cny")):
+        if input_tokens is None:
+            return (
+                tokens * max(price["input_per_mtok_cny"], price["output_per_mtok_cny"]) / 1_000_000
+            )
+        return (
+            input_tokens * price["input_per_mtok_cny"]
+            + output_tokens * price["output_per_mtok_cny"]
+        ) / 1_000_000
+    return None
+
+
+def reserve(connection, *, task, engine_id, run_id, price, tokens, seconds):
+    status = check_budgets(
+        connection, skill_id=task["skill_id"], engine_id=engine_id, task_id=task["id"]
+    )
+    amount = quote(price, tokens=tokens, seconds=seconds)
+    for layer in status.values():
+        if layer["status"] == "blocked":
+            return False
+        if "limit" in layer and (amount is None or layer["spent"] + amount > layer["limit"]):
+            return False
+    if amount is not None:
+        from pa.common import now
+
+        connection.execute(
+            text(
+                "INSERT INTO budget_reservations(run_id,task_id,engine_id,skill_id,cost_cny,at) "
+                "VALUES(:run,:task,:engine,:skill,:cost,:at) ON CONFLICT(run_id) "
+                "DO UPDATE SET cost_cny=cost_cny+excluded.cost_cny"
+            ),
+            {
+                "run": run_id,
+                "task": task["id"],
+                "engine": engine_id,
+                "skill": task["skill_id"],
+                "cost": amount,
+                "at": now(),
+            },
+        )
+    return True
 
 
 def check_budgets(connection, *, skill_id: str | None, engine_id: str | None, task_id: str) -> dict:
@@ -95,7 +160,8 @@ def check_budgets(connection, *, skill_id: str | None, engine_id: str | None, ta
         if scope == "engine" and budget["scope_id"] != engine_id:
             continue
         if scope == "task":
-            continue  # task limits are token/turn/time, not money; handled elsewhere
+            if budget["scope_id"] != task_id:
+                continue
         total = _scope_totals(connection, scope, budget["scope_id"], budget["period"])
         limit = budget["limit_cny"]
         if limit is None:

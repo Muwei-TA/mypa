@@ -1,20 +1,10 @@
-"""Sandbox plugin backends (M5-01).
+"""Select an implemented backend; never downgrade strict isolation to a process."""
 
-Real container runtimes (apple_container, tart, docker) live on the Mac
-mini and register here; the process backend is always available so `pa
-sandbox run` works everywhere. Selection order: configured backend first,
-process fallback when the backend is missing.
-"""
-
-from pa.sandbox.runtime import ProcessSandbox, SandboxBackend
+from pa.sandbox.runtime import MacOSSandbox, ProcessSandbox, SandboxBackend
 
 
 class DockerSandbox(SandboxBackend):
-    """Docker backend: one-shot container, destroyed on exit.
-
-    The docker binary is required; when absent, callers fall back to the
-    process backend instead of failing the task outright.
-    """
+    """Reserved interface; not selectable until a real implementation lands."""
 
     name = "docker"
 
@@ -39,18 +29,15 @@ class TartSandbox(DockerSandbox):
 
 
 def select_backend(configured: str | None = None) -> tuple[SandboxBackend, str]:
-    """Pick the runtime: configured name if importable, else process.
+    """Use macos by default on Mac; process elsewhere. Explicit unknown backends fail."""
+    import sys
 
-    Returns (backend, chosen_name) so the caller can record which sandbox
-    actually ran; the process fallback is explicit, never silent.
-    """
-    registry = {
-        "docker": DockerSandbox,
-        "apple_container": AppleContainerSandbox,
-        "tart": TartSandbox,
-    }
-    if configured and configured in registry:
-        backend = registry[configured]()
-        if getattr(backend, "available", lambda: True)():
-            return backend, backend.name
+    from pa.common import PAError
+
+    if configured in ("docker", "apple_container", "tart"):
+        raise PAError(f"sandbox backend {configured} is not implemented; refusing process fallback")
+    if configured == "macos" or (configured is None and sys.platform == "darwin"):
+        return MacOSSandbox(), "macos"
+    if configured not in (None, "process"):
+        raise PAError("unknown sandbox backend")
     return ProcessSandbox(), "process"

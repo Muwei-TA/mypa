@@ -103,9 +103,11 @@ class Client:
 def install_token_refresher(client: Client, refresher):
     """GitHub App installation tokens auto-refresh; called before each request."""
 
+    original_request = client.request
+
     async def wrapped(method, path, **kwargs):
         await refresher()
-        return await client.request(method, path, **kwargs)
+        return await original_request(method, path, **kwargs)
 
     client.request = wrapped  # type: ignore[method-assign]
 

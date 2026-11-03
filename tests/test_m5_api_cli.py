@@ -139,9 +139,7 @@ def test_cli_archive_run_and_status(configured, tmp_path, monkeypatch):
     from pa.cli.main import app
 
     data_dir = Path(configured.engine.url.database).parent
-    monkeypatch.setattr(
-        "pa.config.loader.load", lambda *a, **k: configured.config, raising=False
-    )
+    monkeypatch.setattr("pa.config.loader.load", lambda *a, **k: configured.config, raising=False)
     runner = CliRunner()
     run = runner.invoke(app, ["--config-dir", str(_config_of(configured)), "archive", "run"])
     assert run.exit_code == 0, run.output
@@ -203,7 +201,9 @@ def test_cli_sandbox_run_processes_command(configured):
     import json as _json
 
     payload = _json.loads(result.output)
-    assert payload["backend"] == "process"
+    import sys
+
+    assert payload["backend"] == ("macos" if sys.platform == "darwin" else "process")
     assert "hi" in payload["stdout"]
 
 
@@ -243,9 +243,7 @@ def test_cli_secret_rotate_and_list_meta(configured):
     import json as _json
 
     assert _json.loads(rotated.output)["rotated"] is True
-    meta = runner.invoke(
-        app, ["--config-dir", str(configured.config_dir), "secret", "list-meta"]
-    )
+    meta = runner.invoke(app, ["--config-dir", str(configured.config_dir), "secret", "list-meta"])
     assert meta.exit_code == 0
     assert any(
         item["ref"] == "secret://keychain/pa/test" for item in _json.loads(meta.output)["items"]

@@ -274,8 +274,9 @@ def test_cli_playbook_dry_run_and_record_placeholder(config_dir):
     runner = CliRunner()
     base = ["--config-dir", str(config_dir), "engine", "playbook"]
     dry = runner.invoke(app, base + ["dry-run", "doubao_desktop", "--json"])
-    assert dry.exit_code == 0
-    assert '"status": "succeeded"' in dry.output
+    assert dry.exit_code == 2
+    assert '"status": "failed"' in dry.output
+    assert "driver unavailable" in dry.output
 
     record = runner.invoke(app, base + ["record", "doubao_desktop", "--json"])
     assert record.exit_code == 0

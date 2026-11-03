@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import Field
 
 from pa.config.schema import Model
-from pa.console.auth import SESSION_COOKIE, cookie_attributes
+from pa.console.auth import CSRF_COOKIE, SESSION_COOKIE, cookie_attributes
 from pa.console.overview import overview
 
 
@@ -44,6 +44,8 @@ def build_console_router(login_service, facade) -> APIRouter:
         response.set_cookie(
             SESSION_COOKIE, login_service.sign_session(session), **cookie_attributes()
         )
+        csrf_attributes = {**cookie_attributes(), "httponly": False}
+        response.set_cookie(CSRF_COOKIE, session.csrf, **csrf_attributes)
         return response
 
     @router.post("/logout", response_class=JSONResponse)
@@ -52,6 +54,7 @@ def build_console_router(login_service, facade) -> APIRouter:
         require_csrf(request, session)
         response = JSONResponse({"status": "ok"})
         response.delete_cookie(SESSION_COOKIE, path="/")
+        response.delete_cookie(CSRF_COOKIE, path="/")
         return response
 
     @router.get("/session", response_class=JSONResponse)

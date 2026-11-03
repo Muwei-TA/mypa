@@ -35,7 +35,7 @@ def claim(engine, config, engine_id, *, task_id=None, skill=None):
         candidates = (
             c.execute(
                 text("""
-            SELECT * FROM tasks WHERE status='queued' AND skill_id='sample-direct'
+            SELECT * FROM tasks WHERE status='queued'
               AND (:task IS NULL OR id=:task)
             ORDER BY pinned DESC,priority ASC,manual_rank ASC NULLS LAST,
               skill_rank ASC,enqueued_at ASC

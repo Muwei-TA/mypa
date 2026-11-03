@@ -11,7 +11,7 @@ TRANSITIONS = {
     "leased": {"running", "queued"},
     "running": {"awaiting_ci", "succeeded", "failed", "awaiting_decision"},
     "awaiting_ci": {"running", "awaiting_decision", "succeeded", "failed"},
-    "awaiting_decision": {"running", "suspended", "closed"},
+    "awaiting_decision": {"running", "queued", "suspended", "closed"},
     "failed": {"queued", "awaiting_decision"},
     "succeeded": {"judged"},
     "judged": {"closed"},

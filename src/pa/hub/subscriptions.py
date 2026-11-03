@@ -90,9 +90,7 @@ def route(connection, config, *, thread_ref: str, actor: str, body: str) -> dict
     if ended:
         if row["stopped_by_owner"]:
             return {"action": "none", "reason": "stopped by owner"}
-        check = revalidate(
-            connection, mandate_json=row["mandate_json"], config=config, actor=actor
-        )
+        check = revalidate(connection, mandate_json=row["mandate_json"], config=config, actor=actor)
         if not check["valid"]:
             return {"action": "reenter", "task_id": row["task_id"], "reason": check["reason"]}
         return {

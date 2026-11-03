@@ -15,12 +15,23 @@ editing, with two-way sync.
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import text
 
 from pa.common import new_id, now
 
 NEVER_AUTO = ("delete_data", "spend_money", "secret_change", "permission_change")
+
+
+def _expired(value):
+    if not value:
+        return False
+    try:
+        expiry = datetime.fromisoformat(value)
+        return expiry.tzinfo is None or expiry <= datetime.now(UTC)
+    except (TypeError, ValueError):
+        return True
 
 
 @dataclass(frozen=True)
@@ -93,9 +104,7 @@ def _fts_reindex(connection, memory_id: str) -> None:
     ).scalar_one_or_none()
     if row is None:
         return
-    connection.execute(
-        text("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
-    )
+    connection.execute(text("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')"))
 
 
 def list_precedents(connection, *, kind: str | None = None) -> list[Precedent]:
@@ -146,9 +155,7 @@ def _recall(question_grams: set[str], precedent_grams: set[str]) -> float:
     return len(question_grams & precedent_grams) / len(question_grams)
 
 
-def search_precedents(
-    connection, *, question: str, scope: str = ""
-) -> list[PrecedentHit]:
+def search_precedents(connection, *, question: str, scope: str = "") -> list[PrecedentHit]:
     """Keyword retrieval over precedents (M2 stand-in for the M5 vector search).
 
     FTS5's unicode61 tokenizer treats a CJK run as a single token, so MATCH
@@ -168,6 +175,8 @@ def search_precedents(
     ).all()
     hits = []
     for row in rows:
+        if _expired(row[5]):
+            continue
         if not _scope_applies(row[4], scope):
             continue
         p_grams = _bigrams(row[2]) | _bigrams(row[3])
@@ -178,8 +187,12 @@ def search_precedents(
             hits.append(
                 PrecedentHit(
                     precedent=Precedent(
-                        id=row[0], kind=row[1], title=row[2], content=row[3],
-                        scope=row[4] or "", expires_at=row[5],
+                        id=row[0],
+                        kind=row[1],
+                        title=row[2],
+                        content=row[3],
+                        scope=row[4] or "",
+                        expires_at=row[5],
                     ),
                     similarity=similarity,
                 )
@@ -203,6 +216,13 @@ def check_precedent(
 
 def apply_precedent(connection, *, hit: PrecedentHit, decision_id: str) -> None:
     """Mark the decision resolved by precedent and record why (K9)."""
+    from pa.common import PAError
+
+    current = connection.execute(
+        text("SELECT kind,expires_at FROM memories WHERE id=:id"), {"id": hit.precedent.id}
+    ).first()
+    if current is None or current[0] != hit.precedent.kind or _expired(current[1]):
+        raise PAError("precedent is expired or no longer valid", "conflict")
     kind = (
         "precedent_decided" if hit.precedent.kind == "precedent_decided" else "precedent_rejected"
     )

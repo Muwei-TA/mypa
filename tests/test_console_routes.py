@@ -107,9 +107,7 @@ def test_logout_requires_csrf(client):
 def test_forged_cookie_rejected(client, login_service):
     _login(client)
     forged = "forged-token.9999999999.deadbeef"
-    response = client.get(
-        "/console/session", cookies={SESSION_COOKIE: forged}
-    )
+    response = client.get("/console/session", cookies={SESSION_COOKIE: forged})
     assert response.status_code == 401
 
 

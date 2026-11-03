@@ -119,9 +119,9 @@ def test_revalidate_inferred_fails_when_mode_not_auto(configured):
 def test_revalidate_explicit_requires_allowlist(configured):
     config = configured.config
     assert (
-        revalidate(
-            None, mandate_json=_mandate("explicit", actor="github:owner"), config=config
-        )["valid"]
+        revalidate(None, mandate_json=_mandate("explicit", actor="github:owner"), config=config)[
+            "valid"
+        ]
         is False
     )
     # Register owner github identity, then it passes.
@@ -138,7 +138,9 @@ def test_revalidate_explicit_requires_allowlist(configured):
 
 def test_void_mandate_records_event(configured):
     task = configured.emit(
-        __import__("pa.ingress.manual", fromlist=["ManualAdapter"]).ManualAdapter().parse(
+        __import__("pa.ingress.manual", fromlist=["ManualAdapter"])
+        .ManualAdapter()
+        .parse(
             {
                 "type": "manual.test",
                 "payload": {"skill": "sample-direct", "text": "hi"},
@@ -149,9 +151,11 @@ def test_void_mandate_records_event(configured):
     with transaction(configured.engine) as c:
         void_mandate(c, task, "rule_disabled")
     with configured.engine.connect() as c:
-        rows = c.execute(
-            text("SELECT reason_json FROM task_events WHERE task_id=:t"), {"t": task}
-        ).scalars().all()
+        rows = (
+            c.execute(text("SELECT reason_json FROM task_events WHERE task_id=:t"), {"t": task})
+            .scalars()
+            .all()
+        )
     assert any("mandate_voided" in r for r in rows)
 
 
@@ -182,7 +186,9 @@ def _fake_config_with_roles(config, review_engines):
 
 def test_review_role_skips_last_author_engine(configured):
     task = configured.emit(
-        __import__("pa.ingress.manual", fromlist=["ManualAdapter"]).ManualAdapter().parse(
+        __import__("pa.ingress.manual", fromlist=["ManualAdapter"])
+        .ManualAdapter()
+        .parse(
             {
                 "type": "manual.test",
                 "payload": {"skill": "sample-direct", "text": "hi"},
@@ -201,7 +207,9 @@ def test_review_role_skips_last_author_engine(configured):
 
 def test_review_role_flags_same_model_fallback(configured):
     task = configured.emit(
-        __import__("pa.ingress.manual", fromlist=["ManualAdapter"]).ManualAdapter().parse(
+        __import__("pa.ingress.manual", fromlist=["ManualAdapter"])
+        .ManualAdapter()
+        .parse(
             {
                 "type": "manual.test",
                 "payload": {"skill": "sample-direct", "text": "hi"},
@@ -219,7 +227,9 @@ def test_review_role_flags_same_model_fallback(configured):
 
 def test_last_author_none_without_code_changes(configured):
     task = configured.emit(
-        __import__("pa.ingress.manual", fromlist=["ManualAdapter"]).ManualAdapter().parse(
+        __import__("pa.ingress.manual", fromlist=["ManualAdapter"])
+        .ManualAdapter()
+        .parse(
             {
                 "type": "manual.test",
                 "payload": {"skill": "sample-direct", "text": "hi"},

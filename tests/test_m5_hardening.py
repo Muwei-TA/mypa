@@ -5,6 +5,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 
 from pa.cost.budget import budget_action, check_budgets
@@ -44,9 +45,7 @@ def test_process_sandbox_runs_command_with_limits():
 
 def test_process_sandbox_timeout():
     sandbox = ProcessSandbox()
-    spec = SandboxSpec(
-        command=[sys.executable, "-c", "import time; time.sleep(5)"], timeout_min=1
-    )
+    spec = SandboxSpec(command=[sys.executable, "-c", "import time; time.sleep(5)"], timeout_min=1)
     spec.timeout_min = 0
     # 0-minute timeout clamps to immediate expiry path in the runner contract
     result = sandbox.run(spec)
@@ -81,13 +80,14 @@ def test_review_spec_is_strict():
     assert spec.review is True
 
 
-def test_select_backend_falls_back_to_process():
-    backend, name = select_backend("docker")
-    # docker binary absent in this env: fall back, explicitly
-    assert name in ("docker", "process")
-    assert backend.name == name
-    fallback_backend, fallback_name = select_backend("not-a-backend")
-    assert fallback_name == "process"
+def test_select_backend_refuses_unimplemented_isolation():
+    from pa.common import PAError
+
+    for backend in ("docker", "apple_container", "tart", "not-a-backend"):
+        with pytest.raises(PAError):
+            select_backend(backend)
+    backend, name = select_backend("process")
+    assert backend.name == name == "process"
 
 
 def test_shell_command_parses():
@@ -100,9 +100,11 @@ def test_shell_command_parses():
 def test_memory_write_redacts_and_expires(configured):
     with transaction(configured.engine) as c:
         mid = add_memory(c, kind="context", title="临时上下文", content="sk-secret123 内容")
-        row = c.execute(
-            text("SELECT content,expires_at FROM memories WHERE id=:id"), {"id": mid}
-        ).mappings().first()
+        row = (
+            c.execute(text("SELECT content,expires_at FROM memories WHERE id=:id"), {"id": mid})
+            .mappings()
+            .first()
+        )
     assert "sk-secret123" not in row["content"]
     assert row["expires_at"] is not None  # context expires in 7 days
 
@@ -230,7 +232,9 @@ def test_budget_soft_and_blocked_actions(configured):
 
 def test_breaker_trips_and_cools_down(configured):
     with transaction(configured.engine) as c:
-        result = breaker_fail(c, "eng-1", kind="auth")
+        assert breaker_fail(c, "eng-1", kind="transient")["state"] == "closed"
+        assert breaker_fail(c, "eng-1", kind="transient")["state"] == "closed"
+        result = breaker_fail(c, "eng-1", kind="transient")
     assert result["state"] == "open"
     with configured.engine.connect() as c:
         assert is_open(c, "eng-1") is True
@@ -254,8 +258,14 @@ def test_health_checks_and_three_strike_triage(configured):
         checks = run_checks(c, alive={"core": True, "worker": True, "server": True})
     names = [ch.name for ch in checks]
     assert set(names) == {
-        "db_writable", "core_alive", "worker_alive", "server_alive",
-        "feishu_connected", "engine_health", "disk_space", "queue_lag",
+        "db_writable",
+        "core_alive",
+        "worker_alive",
+        "server_alive",
+        "feishu_connected",
+        "engine_health",
+        "disk_space",
+        "queue_lag",
     }
     problems = triage({"feishu_connected": [True, False, False, False]})
     assert problems and problems[0]["check"] == "feishu_connected"
@@ -323,11 +333,13 @@ def test_sops_load_missing_file_returns_empty(tmp_path):
 
 def test_assess_parse_drops_unknown_rules():
     verdict = parse_verdict(
-        {"results": [
-            {"rule_id": "r-1", "match": True, "reason": "来源匹配"},
-            {"rule_id": "r-fake", "match": True},
-            "garbage",
-        ]},
+        {
+            "results": [
+                {"rule_id": "r-1", "match": True, "reason": "来源匹配"},
+                {"rule_id": "r-fake", "match": True},
+                "garbage",
+            ]
+        },
         allowed_rule_ids={"r-1"},
     )
     assert verdict["ok"] is True

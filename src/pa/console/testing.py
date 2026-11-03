@@ -55,9 +55,7 @@ def dry_run_rules(config_dir, event: dict) -> dict:
             continue
         mode = rule.accept_mode or loaded.main.defaults.accept_mode_proactive
         explicit = (
-            candidate.source == "manual"
-            or candidate.addressed
-            or bool(rule.require.actor_in)
+            candidate.source == "manual" or candidate.addressed or bool(rule.require.actor_in)
         )
         hits.append(
             {

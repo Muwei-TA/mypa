@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pa-automation"
-version = "0.1.0"
-description = "Private AI automation system — M1 foundation"
+version = "0.1.1"
+description = "Private AI automation system"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -43,8 +43,7 @@ def verify(snapshot_path: Path) -> dict:
     conn = sqlite3.connect(str(snapshot_path))
     try:
         tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         required = {"events", "tasks", "task_events", "runs", "effects", "decisions"}
         missing = required - tables

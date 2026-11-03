@@ -93,6 +93,7 @@ class GitHubAdapter(ScmAdapter):
     async def get_checks(self, repo: str, pr: PR) -> CheckSummary:
         # GitHub Checks API: any non-success completed run means failure.
         data = await self.client.request("GET", f"/repos/{repo}/commits/{pr.sha}/check-runs")
+        statuses = await self.client.request("GET", f"/repos/{repo}/commits/{pr.sha}/status")
         contexts = [
             {
                 "context": run["name"],
@@ -107,6 +108,13 @@ class GitHubAdapter(ScmAdapter):
             }
             for run in data.get("check_runs", [])
         ]
+        contexts += [
+            {"context": s["context"], "state": s["state"], "url": s.get("target_url")}
+            for s in statuses.get("statuses", [])
+        ]
+        # The platform returns newest statuses first. Historical failures must
+        # not override a newer success, or vice versa.
+        contexts = list({c["context"]: c for c in reversed(contexts)}.values())
         state = (
             "success"
             if contexts and all(c["state"] == "success" for c in contexts)
@@ -126,7 +134,7 @@ class GitHubAdapter(ScmAdapter):
             "PUT",
             f"/repos/{repo}/pulls/{pr.number}/merge",
             identity="merger",
-            json_body={"merge_method": method},
+            json_body={"merge_method": method, "sha": pr.sha},
         )
         return MergeResult(
             merged=bool(data.get("merged", False)), sha=data.get("sha"), method=method
@@ -183,6 +191,4 @@ class GitHubAdapter(ScmAdapter):
         return None
 
     def verify_webhook(self, headers: dict[str, str], body: bytes) -> bool:
-        return verify_hmac(
-            self.webhook_secret, body, headers.get("X-Hub-Signature-256")
-        )
+        return verify_hmac(self.webhook_secret, body, headers.get("X-Hub-Signature-256"))

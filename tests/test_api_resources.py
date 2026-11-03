@@ -12,17 +12,13 @@ AGENT_TOKEN = "agent-token-1"
 
 @pytest.fixture
 def client(configured):
-    app = create_app(
-        configured, api_token=OWNER_TOKEN, agent_token=AGENT_TOKEN
-    )
+    app = create_app(configured, api_token=OWNER_TOKEN, agent_token=AGENT_TOKEN)
     return TestClient(app)
 
 
 @pytest.fixture
 def agent_client(configured):
-    app = create_app(
-        configured, api_token=OWNER_TOKEN, agent_token=AGENT_TOKEN
-    )
+    app = create_app(configured, api_token=OWNER_TOKEN, agent_token=AGENT_TOKEN)
     return TestClient(app)
 
 

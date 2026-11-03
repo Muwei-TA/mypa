@@ -184,41 +184,18 @@ def handle_callback(
             text("UPDATE decisions SET status='expired' WHERE id=:id"), {"id": decision_id}
         )
         return {"ok": False, "reason": "expired"}
-    # Consume the nonce: rotate it so the same card cannot be clicked twice.
-    connection.execute(
-        text("""
-        UPDATE decisions SET status='answered',answer=:answer,answered_by=:by,
-          save_as_precedent=:save,nonce=:nonce WHERE id=:id
-    """),
-        {
-            "answer": option,
-            "by": f"feishu:{clicker_open_id}",
-            "save": save_as,
-            "nonce": secrets.token_hex(16),
-            "id": decision_id,
-        },
+    from pa.hub.decisions import submit
+
+    submitted = submit(
+        connection,
+        decision_id,
+        option,
+        actor=f"feishu:{clicker_open_id}",
+        source="feishu",
+        save_as=save_as,
     )
-    event_id = new_id()
-    connection.execute(
-        text("""
-        INSERT INTO events(id,source,type,category,actor,principal,subject,dedup_key,
-          trust,status,payload_json,received_at,summary,link,addressed)
-        VALUES(:id,'feishu','decision.submitted','decision',:actor,'owner',:subject,
-          :dedup,'verified','accepted',:payload,:received_at,:summary,NULL,1)
-    """),
-        {
-            "id": event_id,
-            "actor": f"feishu:{clicker_open_id}",
-            "subject": task_id or row[1],
-            "dedup": f"feishu:decision:{decision_id}:{option}",
-            "payload": json.dumps(
-                {"decision_id": decision_id, "option": option, "save_as_precedent": save_as},
-                ensure_ascii=False,
-            ),
-            "received_at": now(),
-            "summary": f"决定已提交：{option}",
-        },
-    )
+    event_id = submitted["event_id"]
+
     return {
         "ok": True,
         "decision_id": decision_id,

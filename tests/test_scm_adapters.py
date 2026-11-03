@@ -105,9 +105,7 @@ def github(identities):
                 "url": "/repos/o/r/commits/abc123/check-runs",
                 "response": {
                     "total_count": 1,
-                    "check_runs": [
-                        {"name": "ci", "status": "completed", "conclusion": "success"}
-                    ],
+                    "check_runs": [{"name": "ci", "status": "completed", "conclusion": "success"}],
                 },
             },
             {

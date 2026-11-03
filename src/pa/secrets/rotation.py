@@ -47,9 +47,7 @@ def due(connection, *, at: datetime | None = None) -> list[dict]:
             level = "P2"
         if level:
             last = (
-                datetime.fromisoformat(row["last_reminded_at"])
-                if row["last_reminded_at"]
-                else None
+                datetime.fromisoformat(row["last_reminded_at"]) if row["last_reminded_at"] else None
             )
             # P1 re-reminds every 3 days after expiry; P2 once inside the window
             if level == "P1" and last and (moment - last).days < REMIND_AFTER_DAYS_INTERVAL:
@@ -58,8 +56,12 @@ def due(connection, *, at: datetime | None = None) -> list[dict]:
                 level = None
             if level:
                 result.append(
-                    {"ref": row["ref"], "provider": row["provider"], "level": level,
-                     "days_left": days_left}
+                    {
+                        "ref": row["ref"],
+                        "provider": row["provider"],
+                        "level": level,
+                        "days_left": days_left,
+                    }
                 )
     return result
 

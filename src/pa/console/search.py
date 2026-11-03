@@ -102,9 +102,7 @@ def search(connection, query: str, *, limit: int = _LIMIT_PER_KIND) -> dict:
             )
 
     # 4) thread lookup: subscription thread_refs
-    sql = (
-        "SELECT DISTINCT thread_ref FROM subscriptions WHERE thread_ref LIKE :like LIMIT :lim"
-    )
+    sql = "SELECT DISTINCT thread_ref FROM subscriptions WHERE thread_ref LIKE :like LIMIT :lim"
     params = {"like": _like(q), "lim": limit}
     for row in connection.execute(text(sql), params).mappings():
         items.append(

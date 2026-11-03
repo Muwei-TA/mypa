@@ -11,6 +11,8 @@ class EngineRequest(Model):
     prompt: str
     output_dir: Path
     max_turns: int | None = Field(default=None, ge=1)
+    workspace: Path | None = None
+    git_dir: Path | None = None
 
 
 class EngineResult(Model):

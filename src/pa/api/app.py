@@ -23,6 +23,7 @@ from pa.console.testing import dry_run_skill as test_skill
 from pa.ingress.github import GiteaWebhookAdapter, GitHubWebhookAdapter
 from pa.ingress.manual import ManualAdapter
 from pa.ingress.webhook_common import WebhookGuard
+from pa.store.db import transaction
 from pa.store.models import TaskStatus
 from pa.store.roles import AgentFacade
 
@@ -91,7 +92,7 @@ def create_app(
     login_service=None,
 ) -> FastAPI:
     app = FastAPI(
-        title="PA Automation", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None
+        title="PA Automation", version="0.1.1", docs_url=None, redoc_url=None, openapi_url=None
     )
     router = APIRouter(prefix="/api/v1")
     guards = {k: WebhookGuard(secret=v) for k, v in (webhook_secrets or {}).items()}
@@ -109,19 +110,39 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    def require_agent(authorization: str | None = Header(default=None)):
+    def session_owner(request: Request, *, writing=False):
+        if login_service is None:
+            return None
+        from pa.console.auth import SESSION_COOKIE
+
+        session = login_service.verify_session(request.cookies.get(SESSION_COOKIE))
+        if session is None:
+            return None
+        if writing and not login_service.check_csrf(session, request.headers.get("X-CSRF-Token")):
+            raise HTTPException(status_code=403, detail="csrf check failed")
+        return facade
+
+    def require_agent(request: Request, authorization: str | None = Header(default=None)):
         """Agent tokens authenticate as agent-role; owner tokens pass too."""
-        if agent_token and authorization and secrets.compare_digest(
-            authorization.encode(), f"Bearer {agent_token}".encode()
+        if not authorization and (f := session_owner(request, writing=request.method != "GET")):
+            return f
+        if (
+            agent_token
+            and authorization
+            and secrets.compare_digest(authorization.encode(), f"Bearer {agent_token}".encode())
         ):
             return agent_facade
         require_auth(authorization)
         return facade
 
-    def require_owner(authorization: str | None = Header(default=None)):
+    def require_owner(request: Request, authorization: str | None = Header(default=None)):
         """Owner-only surface: agent tokens are structurally rejected."""
-        if agent_token and authorization and secrets.compare_digest(
-            authorization.encode(), f"Bearer {agent_token}".encode()
+        if not authorization and (f := session_owner(request, writing=request.method != "GET")):
+            return f
+        if (
+            agent_token
+            and authorization
+            and secrets.compare_digest(authorization.encode(), f"Bearer {agent_token}".encode())
         ):
             raise HTTPException(status_code=403, detail="agent tokens cannot call this")
         require_auth(authorization)
@@ -263,11 +284,11 @@ def create_app(
         return f.status()
 
     @router.post("/system:pause")
-    def system_pause(_: None = Depends(require_auth)):
+    def system_pause(_: object = Depends(require_owner)):
         return facade.pause()
 
     @router.post("/system:resume")
-    def system_resume(_: None = Depends(require_auth)):
+    def system_resume(_: object = Depends(require_owner)):
         return facade.resume()
 
     # --- M3-02 resource surface ------------------------------------------
@@ -330,33 +351,10 @@ def create_app(
 
     @router.post("/decisions/{decision_id}:answer")
     def decision_answer(decision_id: str, body: DecisionAnswer, f=Depends(require_owner)):
-        with facade.engine.connect() as connection:
-            row = connection.execute(
-                text("SELECT task_id,status FROM decisions WHERE id=:id"), {"id": decision_id}
-            ).first()
-        if row is None:
-            raise HTTPException(status_code=404, detail="decision not found")
-        if row[1] != "pending":
-            raise HTTPException(status_code=409, detail=f"decision already {row[1]}")
-        with facade.engine.begin() as connection:
-            connection.execute(
-                text("""
-                UPDATE decisions SET status='answered',answer=:answer,answered_by='owner'
-                  WHERE id=:id
-            """),
-                {"answer": body.option, "id": decision_id},
-            )
-            connection.execute(
-                text("""
-                INSERT INTO audit_log(id,actor,action,at) VALUES(:id,'owner',:action,:at)
-            """),
-                {
-                    "id": f"audit-{decision_id}",
-                    "action": f"decision.answer:{body.option}",
-                    "at": now(),
-                },
-            )
-        return {"decision_id": decision_id, "answer": body.option, "status": "answered"}
+        from pa.hub.decisions import submit
+
+        with transaction(f.engine) as connection:
+            return submit(connection, decision_id, body.option)
 
     @router.get("/precedents")
     def precedents(kind: str | None = None, f=Depends(require_agent)):
@@ -415,7 +413,7 @@ def create_app(
         from pa.config.versions import ConfigConflict, save_versioned
 
         try:
-            with f.engine.begin() as connection:
+            with transaction(f.engine) as connection:
                 result = save_versioned(
                     connection,
                     f.config_dir,
@@ -534,9 +532,7 @@ def create_app(
     @router.get("/budgets")
     def budgets_list(f=Depends(require_agent)):
         with f.engine.connect() as connection:
-            rows = connection.execute(
-                text("SELECT * FROM budgets ORDER BY rowid")
-            ).mappings()
+            rows = connection.execute(text("SELECT * FROM budgets ORDER BY rowid")).mappings()
             return {"items": [dict(r) for r in rows]}
 
     @router.put("/budgets")
@@ -558,9 +554,11 @@ def create_app(
                     "soft": body.soft_pct,
                 },
             )
-            row = connection.execute(
-                text("SELECT * FROM budgets WHERE id=:id"), {"id": body.id}
-            ).mappings().first()
+            row = (
+                connection.execute(text("SELECT * FROM budgets WHERE id=:id"), {"id": body.id})
+                .mappings()
+                .first()
+            )
             return dict(row)
 
     @router.get("/memories")
@@ -586,9 +584,11 @@ def create_app(
                 title=body.title,
                 content=body.content,
             )
-            row = connection.execute(
-                text("SELECT * FROM memories WHERE id=:id"), {"id": memory_id}
-            ).mappings().first()
+            row = (
+                connection.execute(text("SELECT * FROM memories WHERE id=:id"), {"id": memory_id})
+                .mappings()
+                .first()
+            )
             return dict(row)
 
     @router.delete("/memories/{memory_id}")

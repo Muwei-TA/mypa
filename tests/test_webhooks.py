@@ -113,9 +113,7 @@ def test_unsupported_event_type_raises():
 
 
 def _app(configured, secrets_map):
-    app = create_app(
-        configured, api_token="tok", webhook_secrets=secrets_map
-    )
+    app = create_app(configured, api_token="tok", webhook_secrets=secrets_map)
     return TestClient(app)
 
 

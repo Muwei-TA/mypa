@@ -31,10 +31,7 @@ runner = CliRunner()
 
 
 def test_e2e_11_sandbox_runs_never_report_degraded():
-    backend, name = select_backend("docker")  # docker binary decides; both are fine
-    assert name in ("docker", "process")
-    if name == "docker":
-        return  # real docker present: container drill runs on the host instead
+    backend, name = select_backend("process")
     result = backend.run(SandboxSpec(command=["true"], timeout_min=1))
     assert result.ok and result.sandbox == "process"
     assert "degraded" not in result.sandbox
@@ -42,7 +39,8 @@ def test_e2e_11_sandbox_runs_never_report_degraded():
     spec = review_spec(["true"])
     assert spec.review is True and spec.network == "none" and spec.mount == "readonly"
     reviewed = ProcessSandbox().run(spec)
-    assert reviewed.ok and "review=strict" in reviewed.notes
+    assert not reviewed.ok and "isolation_required" in reviewed.stderr
+    assert "review=strict" not in reviewed.notes
     assert reviewed.sandbox != "degraded"
 
 
@@ -103,7 +101,8 @@ def test_e2e_14_c_tier_receipt_clamped_and_gated():
     except Exception as exc:  # PAError: hard rule, refuses the tool outright
         assert "external_message" in str(exc)
 
-    allowed = check_c_tier_limits(skill=type("S", (), {"tools": [], "risk_ceiling": "low",
-                                                       "repo_write": False})())
+    allowed = check_c_tier_limits(
+        skill=type("S", (), {"tools": [], "risk_ceiling": "low", "repo_write": False})()
+    )
     assert allowed["can_edit_code"] is False
     assert clamp_confidence(0.42) == 0.42

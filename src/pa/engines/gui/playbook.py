@@ -16,7 +16,7 @@ from pydantic import Field
 
 from pa.common import PAError
 from pa.config.schema import Model
-from pa.engines.gui.driver import SyntheticDriver
+from pa.engines.gui.driver import GUIDriver
 
 
 class PlaybookStep(Model):
@@ -35,7 +35,7 @@ class Playbook(Model):
         data = yaml.safe_load(path.read_text()) or {}
         steps = []
         for raw in data.get("steps", []):
-            (kind, params), = raw.items()
+            ((kind, params),) = raw.items()
             steps.append(PlaybookStep(kind=kind, params=dict(params or {})))
         return cls(
             app=data["app"],
@@ -64,7 +64,7 @@ class PlaybookRun:
 
     def __init__(self, playbook: Playbook, driver=None, *, screenshot_dir: Path | None = None):
         self.playbook = playbook
-        self.driver = driver or SyntheticDriver()
+        self.driver = driver or GUIDriver()
         self.screenshot_dir = screenshot_dir
         self.log: list[dict] = []
 
@@ -92,12 +92,15 @@ class PlaybookRun:
         return None
 
     def execute(self, *, prompt: str = "", dry_run: bool = False) -> dict:
+        self._last_reply = None
         for step in self.playbook.steps:
             if step.kind not in SUPPORTED_STEPS:
                 return self._fail(step, f"unknown step type: {step.kind}")
             problem = self._check_preconditions(step)
             if problem:
                 return self._fail(step, problem)
+            if dry_run and step.kind not in ("activate_app", "wait_for", "screenshot"):
+                continue
             handler = getattr(self, "_do_" + step.kind)
             outcome = handler(step, prompt, dry_run=dry_run)
             self._record(step, outcome)

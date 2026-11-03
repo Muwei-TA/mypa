@@ -28,9 +28,15 @@ class HealthCheck:
     detail: str = ""
 
 
-def run_checks(connection, *, alive: dict[str, bool] | None = None, disk_free_gb: float = 10.0,
-               queue_lag_min: float = 0.0, feishu_ok: bool = True,
-               engines_ok: bool = True) -> list[HealthCheck]:
+def run_checks(
+    connection,
+    *,
+    alive: dict[str, bool] | None = None,
+    disk_free_gb: float = 10.0,
+    queue_lag_min: float = 0.0,
+    feishu_ok: bool = True,
+    engines_ok: bool = True,
+) -> list[HealthCheck]:
     """Execute the eight §16.3 checks against the given live signals."""
     alive = alive or {}
     results = []

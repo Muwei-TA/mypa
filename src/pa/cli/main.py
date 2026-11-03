@@ -506,7 +506,6 @@ def engine_playbook(
     json_output: JsonOption = False,
 ):
     """剧本录制占位与试运行：dry-run 只打开不提交任何内容（M4-08）。"""
-    from pa.engines.gui.driver import SyntheticDriver
     from pa.engines.gui.playbook import PlaybookRun, load_playbook
 
     if action == "record":
@@ -522,7 +521,7 @@ def engine_playbook(
         raise typer.BadParameter("action 必须是 record 或 dry-run")
 
     playbook = load_playbook(config_path(ctx), id)
-    run = PlaybookRun(playbook, SyntheticDriver())
+    run = PlaybookRun(playbook)
     result = run.execute(prompt="试运行：不要提交任何内容", dry_run=True)
     output({"engine_id": id, **{k: v for k, v in result.items() if k != "log"}})
     if result["status"] != "succeeded":
@@ -764,9 +763,7 @@ def backup_restore(
     from pa.store.archive import restore as restore_snapshot
 
     _, data_dir = _data_dir(ctx)
-    output(
-        restore_snapshot(Path(file).expanduser(), data_dir / "pa.sqlite3", dry_run=dry_run)
-    )
+    output(restore_snapshot(Path(file).expanduser(), data_dir / "pa.sqlite3", dry_run=dry_run))
 
 
 @cost_app.command("summary")
@@ -832,9 +829,11 @@ def budget_set(
                     "soft": soft_pct,
                 },
             )
-            row = connection.execute(
-                text("SELECT * FROM budgets WHERE id=:id"), {"id": id}
-            ).mappings().first()
+            row = (
+                connection.execute(text("SELECT * FROM budgets WHERE id=:id"), {"id": id})
+                .mappings()
+                .first()
+            )
             output(dict(row))
 
 
@@ -896,13 +895,11 @@ def memory_delete(ctx: typer.Context, id: str, json_output: JsonOption = False):
 @guarded
 def sandbox_run(
     ctx: typer.Context,
-    command: Annotated[
-        str, typer.Argument(help="要执行的命令（shell 字符串），如 \"echo hi\"")
-    ],
+    command: Annotated[str, typer.Argument(help='要执行的命令（shell 字符串），如 "echo hi"')],
     timeout_min: Annotated[int, typer.Option(help="硬超时（分钟）")] = 15,
     json_output: JsonOption = False,
 ):
-    """在一次性沙盒中运行命令（进程回退后端，网络关闭、不注入密钥）。"""
+    """通过可用后端运行命令；process 仅为开发运行器，不提供文件/网络隔离。"""
     from pa.sandbox.backends import select_backend
     from pa.sandbox.runtime import SandboxSpec, shell_command
 
@@ -962,7 +959,5 @@ def secret_register(
 
     with owner(ctx) as facade:
         with facade.engine.begin() as connection:
-            register(
-                connection, ref=ref, provider=provider, rotate_every_days=rotate_every_days
-            )
+            register(connection, ref=ref, provider=provider, rotate_every_days=rotate_every_days)
             output({"ref": ref, "provider": provider, "rotate_every_days": rotate_every_days})

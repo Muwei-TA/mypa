@@ -12,8 +12,9 @@
     <td>{{ d.expires_at }}</td>
     <td>
       {% if d.status == "pending" %}
-      <button class="btn act-answer" data-id="{{ d.id }}" data-option="approve">同意</button>
-      <button class="btn act-answer" data-id="{{ d.id }}" data-option="reject" data-confirm="确认拒绝该决定？">拒绝</button>
+      {% for option in d.options %}
+      <button class="btn act-answer" data-id="{{ d.id }}" data-option="{{ option.id }}" data-confirm="确认选择：{{ option.label }}？">{{ option.label }}</button>
+      {% endfor %}
       {% else %}—{% endif %}
     </td>
   </tr>

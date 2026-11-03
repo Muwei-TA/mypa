@@ -7,7 +7,10 @@ caller (never partially applied). Overrides identical to defaults are
 dropped automatically.
 """
 
+import base64
 import hashlib
+import json
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -28,6 +31,7 @@ VERSION_FILES = frozenset(
         "notify.yaml",
         "schedules.yaml",
         "merge_policy.yaml",
+        "code.yaml",
     }
 )
 
@@ -65,6 +69,71 @@ def _git(config_dir: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _restore_file(target: Path, previous: str | None):
+    if previous is None:
+        target.unlink(missing_ok=True)
+    else:
+        temporary = target.with_name(".restore-" + new_id())
+        temporary.write_bytes(base64.b64decode(previous))
+        temporary.chmod(0o600)
+        temporary.replace(target)
+
+
+def recover_pending(config_dir: Path):
+    """Resolve interrupted file/SQLite commits before opening an instance.
+
+    Taking SQLite's writer lock also waits for another live writer to finish.
+    Journal files contain config references, never resolved credentials.
+    """
+    for journal in config_dir.glob(".config-txn-*.json"):
+        try:
+            data = json.loads(journal.read_text())
+        except FileNotFoundError:
+            continue
+        with sqlite3.connect(data["database"], timeout=30) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not journal.exists():
+                continue
+            row = db.execute(
+                "SELECT content_hash FROM config_versions WHERE file=? AND revision=?",
+                (data["file"], data["revision"]),
+            ).fetchone()
+            if row is None or row[0] != data["hash"]:
+                _restore_file(config_dir / data["file"], data["previous"])
+            journal.unlink(missing_ok=True)
+
+
+def _journal_file(connection, config_dir, file_name, revision, digest, actor):
+    if "pa_rollback_actions" not in connection.info:
+        raise PAError("config writes require store.db.transaction", "conflict")
+    target = config_dir / file_name
+    previous = base64.b64encode(target.read_bytes()).decode() if target.exists() else None
+    journal = config_dir / (".config-txn-" + new_id() + ".json")
+    journal.write_text(
+        json.dumps(
+            {
+                "database": str(connection.engine.url.database),
+                "file": file_name,
+                "revision": revision,
+                "hash": digest,
+                "previous": previous,
+            }
+        )
+    )
+    journal.chmod(0o600)
+
+    def rollback():
+        _restore_file(target, previous)
+        journal.unlink(missing_ok=True)
+
+    def committed():
+        journal.unlink(missing_ok=True)
+        _maybe_git_commit(config_dir, file_name, revision, actor)
+
+    connection.info["pa_rollback_actions"].append(rollback)
+    connection.info["pa_commit_actions"].append(committed)
+
+
 def save_versioned(
     connection,
     config_dir: Path,
@@ -96,9 +165,7 @@ def save_versioned(
         for source in config_dir.glob("*.yaml"):
             if source.name != file_name:
                 (staged / source.name).write_bytes(source.read_bytes())
-        (staged / file_name).write_text(
-            yaml.safe_dump(value, allow_unicode=True, sort_keys=False)
-        )
+        (staged / file_name).write_text(yaml.safe_dump(value, allow_unicode=True, sort_keys=False))
         load(staged)
     finally:
         for item in staged.iterdir():
@@ -120,7 +187,6 @@ def save_versioned(
             "content_hash": digest,
             "unchanged": True,
         }
-    save_files(config_dir, {file_name: value})
     revision = current + 1
     connection.execute(
         text("""
@@ -137,7 +203,8 @@ def save_versioned(
             "at": now(),
         },
     )
-    _maybe_git_commit(config_dir, file_name, revision, actor)
+    _journal_file(connection, config_dir, file_name, revision, digest, actor)
+    save_files(config_dir, {file_name: value})
     return {
         "file": file_name,
         "revision": revision,
@@ -195,7 +262,6 @@ def drop_same_as_default(connection, config_dir: Path, *, file_name: str, defaul
     if content_hash(current) != content_hash(default):
         return {"removed": False}
     base = current_revision(connection, file_name)
-    target.unlink()
     revision = base + 1
     connection.execute(
         text("""
@@ -204,5 +270,6 @@ def drop_same_as_default(connection, config_dir: Path, *, file_name: str, defaul
     """),
         {"rev": revision, "file": file_name, "base": base, "at": now()},
     )
-    _maybe_git_commit(config_dir, file_name, revision, "system")
+    _journal_file(connection, config_dir, file_name, revision, None, "system")
+    target.unlink()
     return {"removed": True, "revision": revision}

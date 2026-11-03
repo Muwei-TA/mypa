@@ -64,7 +64,7 @@ class LocalCLI:
             cmd, stdin, env = self.command(request)
             code, stdout, stderr = await run_process(
                 cmd,
-                cwd=request.output_dir,
+                cwd=request.workspace or request.output_dir,
                 stdin=stdin,
                 extra_env=env,
                 timeout_s=self.config.timeout_s,
@@ -123,8 +123,6 @@ class CodexCLI(LocalCLI):
             "--ephemeral",
             "--ignore-user-config",
             "--skip-git-repo-check",
-            "--sandbox",
-            "read-only",
             "--color",
             "never",
             "--output-schema",
@@ -132,9 +130,33 @@ class CodexCLI(LocalCLI):
             "--output-last-message",
             str(request.output_dir / "last-message.json"),
         ]
+        if request.workspace:
+            cmd += ["--strict-config", *self.code_permissions(request)]
+        else:
+            cmd += ["--sandbox", "read-only"]
         if self.config.model:
             cmd += ["--model", self.config.model]
         return cmd + ["-"], request.prompt, {}
+
+    @staticmethod
+    def code_permissions(request):
+        # Official permission profiles keep host reads out of model commands:
+        # https://learn.chatgpt.com/docs/permissions#file-access-limited-to-workspace
+        # Never combine these with --sandbox, which would select the legacy policy.
+        filesystem = {":root": "deny", ":minimal": "read", ":tmpdir": "deny", ":slash_tmp": "deny"}
+        if request.git_dir:
+            filesystem[str(request.git_dir.resolve())] = "read"
+        entries = ",".join(json.dumps(k) + "=" + json.dumps(v) for k, v in filesystem.items())
+        return [
+            "--config",
+            'default_permissions="pa_code"',
+            "--config",
+            'permissions.pa_code.extends=":workspace"',
+            "--config",
+            "permissions.pa_code.filesystem={" + entries + "}",
+            "--config",
+            "permissions.pa_code.network.enabled=false",
+        ]
 
     def extract(self, stdout, request):
         final = None

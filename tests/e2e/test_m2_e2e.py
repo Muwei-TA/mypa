@@ -73,8 +73,14 @@ def test_e2e_06_blocker_fix_rounds_escalate_to_decision_card(configured):
     for round_ in (1, 2, 3):
         with transaction(configured.engine) as c:
             record_review(
-                c, pr_id=pr_id, round_=round_, engine_id="reviewer", model="rv",
-                result=blocker, tokens=100, task_tokens=1000,
+                c,
+                pr_id=pr_id,
+                round_=round_,
+                engine_id="reviewer",
+                model="rv",
+                result=blocker,
+                tokens=100,
+                task_tokens=1000,
             )
             outcome = fix_round(c, task)
     assert outcome["escalated"] is True and outcome["fix_round"] == 3
@@ -83,7 +89,9 @@ def test_e2e_06_blocker_fix_rounds_escalate_to_decision_card(configured):
     # the card for the escalation decision
     with transaction(configured.engine) as c:
         decision_id = create_decision(
-            c, task_id=task, kind="fix_round_exhausted",
+            c,
+            task_id=task,
+            kind="fix_round_exhausted",
             question="审查 3 轮仍有 blocker，如何处理？",
             recommend="one_more_round",
             options=["one_more_round", "take_over", "close_pr"],
@@ -97,9 +105,14 @@ def test_e2e_06_blocker_fix_rounds_escalate_to_decision_card(configured):
     body = json.dumps({"decision_id": decision_id, "option": "one_more_round"}).encode()
     with transaction(configured.engine) as c:
         clicked = handle_callback(
-            c, body=body, signature=sign_callback(SECRET, body), secret=SECRET,
-            owner_open_id="ou_owner", clicker_open_id="ou_owner",
-            config=configured.config, task_id=task,
+            c,
+            body=body,
+            signature=sign_callback(SECRET, body),
+            secret=SECRET,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_owner",
+            config=configured.config,
+            task_id=task,
         )
     assert clicked["ok"] and clicked["card_update"]["text"] == "已处理：one_more_round"
 
@@ -109,7 +122,7 @@ def test_e2e_06_blocker_fix_rounds_escalate_to_decision_card(configured):
 
 def test_e2e_08_precedent_checkbox_suppresses_second_card(configured):
     """First card answered with 记为先例 -> identical question resolves via
-  precedent on the second pass; no card, reason code precedent_applied."""
+    precedent on the second pass; no card, reason code precedent_applied."""
     task = _task(configured, "e2e08")
     question = "周五晚上要不要做线上发布？"
     # first time: no precedent, judge pushes a card with the checkbox
@@ -131,8 +144,12 @@ def test_e2e_08_precedent_checkbox_suppresses_second_card(configured):
     assert first["status"] == "miss"
     with transaction(configured.engine) as c:
         decision_id = create_decision(
-            c, task_id=task, kind="release_confirm", question=question,
-            recommend="reject", options=["approve", "reject"],
+            c,
+            task_id=task,
+            kind="release_confirm",
+            question=question,
+            recommend="reject",
+            options=["approve", "reject"],
             expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
         )
     # owner clicks reject and checks 记为先例（定了不做的事）
@@ -141,9 +158,14 @@ def test_e2e_08_precedent_checkbox_suppresses_second_card(configured):
     ).encode()
     with transaction(configured.engine) as c:
         clicked = handle_callback(
-            c, body=body, signature=sign_callback(SECRET, body), secret=SECRET,
-            owner_open_id="ou_owner", clicker_open_id="ou_owner",
-            config=configured.config, task_id=task,
+            c,
+            body=body,
+            signature=sign_callback(SECRET, body),
+            secret=SECRET,
+            owner_open_id="ou_owner",
+            clicker_open_id="ou_owner",
+            config=configured.config,
+            task_id=task,
         )
     assert clicked["ok"]
     # the save_as_precedent choice lands in the ledger
@@ -158,8 +180,11 @@ def test_e2e_08_precedent_checkbox_suppresses_second_card(configured):
         from pa.judge.precedents import add_precedent
 
         add_precedent(
-            c, kind="precedent_rejected", scope="prod",
-            title="周五晚上的发布", content="周五晚上不做线上发布",
+            c,
+            kind="precedent_rejected",
+            scope="prod",
+            title="周五晚上的发布",
+            content="周五晚上不做线上发布",
             decision_id=decision_id,
         )
     # second identical question: no card, precedent applied
@@ -169,15 +194,23 @@ def test_e2e_08_precedent_checkbox_suppresses_second_card(configured):
     assert second["status"] == "hit"
     with transaction(configured.engine) as c:
         decision2 = create_decision(
-            c, task_id=task2, kind="release_confirm", question=question,
-            recommend="reject", options=["approve", "reject"],
+            c,
+            task_id=task2,
+            kind="release_confirm",
+            question=question,
+            recommend="reject",
+            options=["approve", "reject"],
             expires_at=(datetime.now(UTC) + timedelta(hours=24)).isoformat(),
         )
         apply_precedent(c, hit=second["hit"], decision_id=decision2)
-        row = c.execute(
-            text("SELECT status,answer,reason_json FROM decisions WHERE id=:id"),
-            {"id": decision2},
-        ).mappings().one()
+        row = (
+            c.execute(
+                text("SELECT status,answer,reason_json FROM decisions WHERE id=:id"),
+                {"id": decision2},
+            )
+            .mappings()
+            .one()
+        )
     assert row["status"] == "precedent" and row["answer"] == "reject"
     reasons = json.loads(row["reason_json"])
     assert reasons["code"] == "precedent_applied"

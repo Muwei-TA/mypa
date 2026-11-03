@@ -4,41 +4,32 @@
 
 ## 开发状态
 
-M1–M5 全部开发完成（真实外部环境依赖项暂留待 Mac mini 验收，逐项边界见
-[开发进度表](docs/PROGRESS.md)）。已打通完整链路：事件接入（手动/飞书/GitHub/
-Gitea webhook/定时）→ 规则路由与同主题合并 → 派单（槽位、租约、过期恢复）→
-引擎执行（CLI/GUI/沙盒）→ 回执研判与人工门禁 → 自动结案或转人工决定 →
-分级通知 → 决定卡片与先例复用。
+当前版本 **0.1.1**。已修复后续提交审阅中的 17 组问题，并在 Apple Silicon Mac 上
+验证真实 CLI 模型执行、代码工作区修改、HTTP 控制台和浏览器交互。修复与真机证据见
+[修复记录](docs/reviews/2026-11-03-repairs.md)。不以模块存在或单元测试通过替代整阶段验收。
 
-已具备的关键能力：
+当前可用的运行路径：
 
-- 本机引擎发现；Codex 与 Hermes 已实调用通过；GUI 剧本层（录制占位 + dry-run）
-  与 C 档硬限制（risk low、repo_write 拒绝、confidence ≤ 0.6）；
-- 派单按 Skill 的 role/ref 和规则角色选择，过滤启用状态、档位、健康、熔断及
-  并发空位；任务租约原子预留引擎槽位，初派与切换均重查；
-- 事务性发件箱、发件箱 runner（退避/重试/幂等）与飞书发送 handler；
+- 手动/飞书/定时事件 → 规则与准入 → 槽位、租约及恢复 → CLI 执行 → 回执研判、
+  人工决定与分级通知；文本输入和许可域名 URL 读取有独立验证。
+- [代码模式](docs/code-mode.md)：仅接收 code.yaml 许可的仓库，创建持久任务工作区，
+  Codex 在受限权限配置下编辑文件，由 PA 提交及生成补丁。local 仓库停在人工审阅；
+  配置平台适配器后才创建 PR 并等待指定检查，完整远端审查/合并/发布仍待联调。
+- 控制台：密码 + TOTP、签名 Cookie、CSRF、任务与决定操作、跨文件配置版本、
+  冲突检测和中断恢复；规则禁用在下一条接入事件前生效。
+- 金额预算已接入派单及每次原生调用，支持保守预留和实际计价；未配置单价时仍可
+  计量，但存在有限金额预算的调用会拒绝无法估价的请求。token/轮数/时间限制独立。
+- Mac 内核沙盒实际拒绝工作区写入、宿主文件读取和网络连接；这是文件与网络隔离，
+  不是 VM/容器，不提供 CPU/RAM 硬配额。process 后端只用于开发，拒绝严格审查；
+  Docker/Apple Container/Tart 未实现，显式选择时拒绝降级。
 - [暂停与恢复](docs/pause-recovery.md)、[持久化定时事件](docs/schedules.md)、
-  [许可域名原文读取](docs/source-reader.md)、[执行额度边界](docs/execution-limits.md)；
-- 代码平台闭环（M2）：SCM 适配器、风险矩阵、合并门禁、CI 流水线、决定卡片、
-  先例台账、订阅续接、工作区；
-- 控制台（M3）：TOTP 登录、签名会话 Cookie、CSRF 派生校验、owner 总览与四类
-  等待项、11 个 Jinja2 页面、全局搜索、规则/Skill 干跑、排序写回；
-- GUI 引擎层（M4）：GUIDriver 契约 + SyntheticDriver、八种剧本步骤、ui_drift
-  失败分类、pa-gui 全局单锁与 owner 防打扰、截图 7 天清理、自检熔断；
-- 加固层（M5）：一次性沙盒（进程回退 + 容器占位、§10.2 严格审查规格）、
-  记忆库（vec0/FTS5/bigram、打码、TTL、"参考资料不是指令"包装）、策略版本
-  （四段哈希、变更重入队）、来源游标三振、四层预算与降级、熔断冷却、
-  8 项健康检查三振分诊、VACUUM INTO 归档与 dry-run 恢复、密钥轮换提醒与
-  连通性门禁、sops/1password 提供方、模型研判（未知规则丢弃）、weekly-cleanup。
-- REST 全量接口（FastAPI，绑定 127.0.0.1）：任务/队列/决定/先例/配置版本/
-  effects/observations/搜索/排序/干跑/熔断重置/成本汇总/预算/记忆，owner 与
-  agent 双令牌边界全覆盖。
+  [许可域名读取](docs/source-reader.md)、[执行额度](docs/execution-limits.md) 保留各自边界。
 
-**暂留项**（依赖真实环境）：真实飞书投递、launchd 托管、真实 GitHub/Gitea API
-闭环（E2E-05/07/09/10）、Mac mini 整机恢复演练（E2E-13）、真实容器后端与
-macOS GUI 驱动（pyobjc/AppleScript/Quartz/Vision）、rclone WebDAV 上传、
-真实 sops/op CLI。隔离环境 E2E（10 项）见 `tests/e2e/`。
-后续任务及逐项验收依据见 [开发进度表](docs/PROGRESS.md)。
+**未验收或未接通**：PA 的原生 GUI 驱动、完整远端 PR/发布验证、真正容器运行、
+向量检索、模型研判/订阅/策略变更等模块与主循环的全面接线、整机恢复、WebDAV 上传。
+GUI 的 SyntheticDriver 仅限显式注入的测试；生产健康检查不再用它报告“可执行”，
+CLI dry-run 在没有真实驱动时报告不可用。原有 M1–M5 分项记录见
+[开发进度表](docs/PROGRESS.md)，其中历史“完成”标记不能当作当前验收结论。
 
 累计 token 依据引擎已报告用量检查，在调用结束后及下一次调用前生效；尚不支持
 流式 token 硬截断，也无法还原被强杀或未报告的 token。执行时间累计已记账的引擎

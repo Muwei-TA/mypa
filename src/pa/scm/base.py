@@ -41,6 +41,12 @@ class Diff:
 class CheckSummary:
     state: str  # success | failure | pending | unknown
     contexts: list[dict[str, Any]] = field(default_factory=list)
+    required: list[str] = field(default_factory=list)
+
+    @property
+    def all_required_passed(self) -> bool:
+        latest = {c["context"]: c["state"] for c in self.contexts}
+        return self.state == "success" and all(latest.get(c) == "success" for c in self.required)
 
 
 @dataclass

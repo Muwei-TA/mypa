@@ -37,8 +37,12 @@ class OwnerFacade:
     """Local owner CLI only. API/agent/executor authentication is a later increment."""
 
     def __init__(self, config_dir: Path):
+        from pa.config.versions import recover_pending
+
+        recover_pending(config_dir)
         self.config_dir = config_dir
         self.config = load(config_dir)
+        self._config_signature = self._signature()
         self.engine = make_engine(self.config.main.data_path(config_dir) / "pa.sqlite3")
 
     def close(self):
@@ -66,7 +70,24 @@ class OwnerFacade:
 
     def emit(self, event: Event):
         with self.writing("event.emit") as connection:
+            signature = self._signature()
+            if signature != self._config_signature:
+                refreshed = load(self.config_dir)
+                if refreshed.main.data_path(self.config_dir) != self.config.main.data_path(
+                    self.config_dir
+                ):
+                    raise PAError("data_dir changes require a stopped runtime", "conflict")
+                self.config = refreshed
+                self._config_signature = signature
             return ingest(connection, event, self.config)
+
+    def _signature(self):
+        import hashlib
+
+        return tuple(
+            (p.name, hashlib.sha256(p.read_bytes()).digest())
+            for p in sorted(self.config_dir.glob("*.yaml"))
+        )
 
     def list(self, table: str, limit: int = 50):
         if table not in READABLE:

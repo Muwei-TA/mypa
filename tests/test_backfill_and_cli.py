@@ -52,17 +52,15 @@ def _effects(facade):
 
 def _enqueue_p1(facade, text_="需要决定"):
     with transaction(facade.engine) as c:
-        return request_notification(
-            c, config=facade.config, task_id="t1", level=P1, text_=text_
-        )["effect_id"]
+        return request_notification(c, config=facade.config, task_id="t1", level=P1, text_=text_)[
+            "effect_id"
+        ]
 
 
 def _mark_backfill(facade, effect_id, status, attempts):
     with transaction(facade.engine) as c:
         c.execute(
-            text(
-                "UPDATE effects SET status=:status,attempts=:attempts WHERE id=:id"
-            ),
+            text("UPDATE effects SET status=:status,attempts=:attempts WHERE id=:id"),
             {"id": effect_id, "status": status, "attempts": attempts},
         )
         _set_state(c, BACKFILL_KEY, json.dumps([{"effect_id": effect_id, "at": now()}]))

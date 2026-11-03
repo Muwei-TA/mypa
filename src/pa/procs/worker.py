@@ -9,6 +9,8 @@ from sqlalchemy import text
 from pa.common import PAError, new_id, now
 from pa.config.loader import load
 from pa.config.schema import SEVEN_TAGS
+from pa.cost.budget import check_budgets, quote, reserve
+from pa.cost.budget import record as record_cost
 from pa.engines.base import EngineRequest, EngineResult
 from pa.engines.selector import eligible, slot_available
 from pa.hub.dispatcher import claim, recover_expired
@@ -18,6 +20,7 @@ from pa.notify.levels import P1, P2
 from pa.obs.redact import redact
 from pa.plugins import discover
 from pa.procs import checkpoints
+from pa.scm.http import ScmError
 from pa.skills.limits import ExecutionBudget
 from pa.skills.loader import load_skill
 from pa.skills.prompt_assembly import assemble
@@ -38,6 +41,9 @@ class Worker:
 
     async def once(self, engine_id=None):
         config = load(self.config_dir)
+        with self.facade.engine.connect() as c:
+            if state(c)["paused"]:
+                return None
         pending = checkpoints.take(self.facade.engine)
         if pending:
             task, saved = pending
@@ -45,6 +51,28 @@ class Worker:
                 return self._escalate_limit(task, saved["reason"], config)
             return await self._drive(task, None, saved["engine_id"], config, saved=saved)
         recover_expired(self.facade.engine)
+        with self.facade.engine.connect() as connection:
+            waiting = (
+                connection.execute(
+                    text(
+                        "SELECT * FROM tasks WHERE status='awaiting_ci' "
+                        "ORDER BY enqueued_at LIMIT 1"
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if waiting:
+            from pa.procs.code import CodeExecutor
+
+            try:
+                if outcome := await CodeExecutor(self.facade, self.config_dir).poll(
+                    dict(waiting), config
+                ):
+                    return outcome
+            except (PAError, OSError, ScmError):
+                # Keep the durable CI state for retry; never infer successful delivery.
+                pass
         for queued in self._queue_candidates():
             skill = load_skill(queued["skill_id"])
             role = self._engine_role(config, queued)
@@ -56,6 +84,7 @@ class Worker:
                 role=role,
                 preferred=engine_id,
                 previous=queued["engine_hint"],
+                budget_allows=lambda name, task=queued: self._money_allowed(task, name),
             ):
                 task = claim(
                     self.facade.engine, config, chosen_id, task_id=queued["id"], skill=skill
@@ -72,8 +101,8 @@ class Worker:
                 connection.execute(
                     text(
                         "SELECT * FROM tasks WHERE status='queued' "
-                        "AND skill_id='sample-direct' ORDER BY pinned DESC,priority ASC,"
-                        "manual_rank ASC NULLS LAST,skill_rank ASC,enqueued_at ASC LIMIT 1"
+                        "ORDER BY pinned DESC,priority ASC,"
+                        "manual_rank ASC NULLS LAST,skill_rank ASC,enqueued_at ASC LIMIT 50"
                     )
                 )
                 .mappings()
@@ -101,6 +130,7 @@ class Worker:
             role=self._engine_role(config, task),
             excluded=used_engines,
             task_id=task["id"],
+            budget_allows=lambda name: self._money_allowed(task, name),
         ):
             with transaction(self.facade.engine) as connection:
                 if state(connection)["paused"]:
@@ -201,6 +231,8 @@ class Worker:
                 "task_timeout",
                 "task_turn_limit",
                 "source_read_failed",
+                "task_money_limit",
+                "code_setup_failed",
             }:
                 return self._escalate_limit(task, result.error_kind, config)
             if result.receipt is not None and not result.error:
@@ -271,12 +303,27 @@ class Worker:
                 engine_id=engine_id, error="turn allowance exhausted", error_kind="task_turn_limit"
             )
         with transaction(self.facade.engine) as connection:
+            if not reserve(
+                connection,
+                task=task,
+                engine_id=engine_id,
+                run_id=run_id,
+                price=config.engines.engines[engine_id].pricing,
+                tokens=budget.max_tokens - budget.tokens,
+                seconds=budget.remaining_s,
+            ):
+                return EngineResult(
+                    engine_id=engine_id,
+                    error="monetary budget exhausted",
+                    error_kind="task_money_limit",
+                )
             was_estimated = connection.execute(
                 text("SELECT turns_estimated FROM runs WHERE id=:id"), {"id": run_id}
             ).scalar_one()
             reservation = connection.execute(
                 text("""
-                UPDATE runs SET turns_charged=turns_charged+:turns,turns_estimated=1
+                UPDATE runs SET turns_charged=turns_charged+:turns,turns_estimated=1,
+                  native_calls=native_calls+1
                 WHERE id=:run AND EXISTS (
                     SELECT 1 FROM tasks WHERE id=:task AND status='running' AND lease_owner=:owner)
                 """),
@@ -296,7 +343,11 @@ class Worker:
         started = time.monotonic()
         try:
             async with asyncio.timeout(budget.remaining_s):
-                result = (await engine.run(request)).model_copy(deep=True)
+                if config.engines.engines[engine_id].adapter == "gui":
+                    result = await engine.run(request, skill=load_skill(task["skill_id"]))
+                else:
+                    result = await engine.run(request)
+                result = result.model_copy(deep=True)
         except TimeoutError:
             result = EngineResult(
                 engine_id=engine_id,
@@ -353,14 +404,38 @@ class Worker:
                     content = (
                         f"原始输入：\n{content}\n\n已读取来源：{source.url}\n原文：\n{source.text}"
                     )
+                workspace = None
+                git_dir = None
+                if load_skill(task["skill_id"]).mode == "code":
+                    from pa.procs.code import CodeExecutor
+
+                    workspace = await asyncio.to_thread(
+                        CodeExecutor(self.facade, self.config_dir).prepare, task, config
+                    )
+                    with self.facade.engine.connect() as c:
+                        from pathlib import Path
+
+                        git_dir = Path(
+                            c.execute(
+                                text("SELECT mirror FROM code_workspaces WHERE task_id=:id"),
+                                {"id": task["id"]},
+                            ).scalar_one()
+                        )
+                    content += (
+                        f"\n工作区：{workspace}\n只编辑此工作区的文件，不提交、不推送或创建 PR；"
+                        "提交和平台操作由 PA 运行时完成。按真实改动输出回执。"
+                    )
                 return EngineRequest(
                     task_id=task["id"],
                     output_dir=output_dir,
+                    workspace=workspace,
+                    git_dir=git_dir,
                     prompt=assemble(
                         content,
                         policy_version=config.policy_version,
                         recovered=recovered,
                         skill_id=task["skill_id"],
+                        workspace=workspace,
                     ),
                 )
         finally:
@@ -424,9 +499,11 @@ class Worker:
                     engine_id=engine_id,
                     error="source could not be read"
                     if exc.code == "source_read_failed"
-                    else "secret detected in input",
+                    else str(exc),
                     error_kind="source_read_failed"
                     if exc.code == "source_read_failed"
+                    else "code_setup_failed"
+                    if exc.code == "code_setup_failed"
                     else "fatal",
                 )
             finally:
@@ -486,17 +563,17 @@ class Worker:
                 error_kind="cancelled",
                 usage=completed_usage,
             )
-            self._record_attempt(run_id, task, cancelled, engine_id)
+            self._record_attempt(run_id, task, cancelled, engine_id, config=config)
             if asyncio.current_task().cancelling():
                 raise
             return run_id, cancelled
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
-        self._record_attempt(run_id, task, result, engine_id, context=context)
+        self._record_attempt(run_id, task, result, engine_id, context=context, config=config)
         return run_id, result
 
-    def _record_attempt(self, run_id, task, result, engine_id, *, context=None):
+    def _record_attempt(self, run_id, task, result, engine_id, *, context=None, config=None):
         with transaction(self.facade.engine) as connection:
             receipt = result.receipt
             connection.execute(
@@ -534,26 +611,67 @@ class Worker:
                         "result": result.model_dump(mode="json"),
                     },
                 )
+            config = config or load(self.config_dir)
+            price = config.engines.engines[engine_id].pricing
+            mode = price.get("mode", "token")
+            calls = connection.execute(
+                text("SELECT native_calls FROM runs WHERE id=:id"), {"id": run_id}
+            ).scalar_one()
+            cost = quote(
+                price,
+                input_tokens=result.usage.input_tokens,
+                output_tokens=result.usage.output_tokens,
+                calls=calls,
+                seconds=result.usage.duration_s,
+            )
             connection.execute(
-                text("""
-                INSERT INTO cost_ledger(id,task_id,run_id,engine_id,skill_id,mode,input_tokens,
-                  output_tokens,duration_s,cost_cny,est,at)
-                VALUES(:id,:task,:run,:engine,'sample-direct','token',:input,:output,:duration,
-                  NULL,1,:at)
-            """),
-                {
-                    "id": new_id(),
-                    "task": task["id"],
-                    "run": run_id,
-                    "engine": engine_id,
-                    "input": result.usage.input_tokens,
-                    "output": result.usage.output_tokens,
-                    "duration": result.usage.duration_s,
-                    "at": now(),
-                },
+                text("DELETE FROM budget_reservations WHERE run_id=:id"), {"id": run_id}
+            )
+            record_cost(
+                connection,
+                task_id=task["id"],
+                run_id=run_id,
+                engine_id=engine_id,
+                skill_id=task["skill_id"],
+                mode=mode,
+                calls=calls,
+                input_tokens=result.usage.input_tokens,
+                output_tokens=result.usage.output_tokens,
+                duration_s=result.usage.duration_s,
+                cost_cny=cost,
+                est=cost is None,
             )
 
+    def _money_allowed(self, task, engine_id, *, connection=None):
+        if connection is None:
+            with self.facade.engine.connect() as c:
+                return self._money_allowed(task, engine_id, connection=c)
+        verdict = check_budgets(
+            connection, skill_id=task["skill_id"], engine_id=engine_id, task_id=task["id"]
+        )
+        return all(layer["status"] != "blocked" for layer in verdict.values())
+
     async def _finalize(self, task, run_id, result, engine_id, config):
+        code_pr = False
+        if load_skill(task["skill_id"]).mode == "code":
+            with transaction(self.facade.engine) as c:
+                if deferred := checkpoints.defer_if_paused(c, task):
+                    return deferred
+            from pa.procs.code import CodeExecutor
+
+            delivery = asyncio.create_task(
+                CodeExecutor(self.facade, self.config_dir).finish(task, config, result.receipt)
+            )
+            pulse = asyncio.create_task(self._heartbeat(task, [delivery]))
+            try:
+                result.receipt, code_pr = await delivery
+            except (PAError, OSError, ScmError) as exc:
+                result.receipt.draft = True
+                result.receipt.status = "needs_human"
+                result.receipt.summary = f"代码交付未完成：{redact(str(exc))}"
+            finally:
+                pulse.cancel()
+                await asyncio.gather(pulse, return_exceptions=True)
         with transaction(self.facade.engine) as connection:
             current = (
                 connection.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task["id"]})
@@ -565,6 +683,18 @@ class Worker:
                 return {"task_id": task["id"], "status": current["status"]}
             if deferred := checkpoints.defer_if_paused(connection, task):
                 return deferred
+            from pa.obs.breaker import record_success
+
+            connection.execute(
+                text("UPDATE runs SET receipt_json=:receipt WHERE id=:id"),
+                {
+                    "id": run_id,
+                    "receipt": json.dumps(
+                        redact(receipt.model_dump(mode="json", exclude_none=True))
+                    ),
+                },
+            )
+            record_success(connection, engine_id)
             need = (
                 receipt.status in {"failed", "blocked", "needs_human"}
                 or receipt.draft
@@ -574,7 +704,11 @@ class Worker:
                 or bool(set(receipt.tags) & SEVEN_TAGS)
             )
             dropped = receipt.status == "dropped"
-            status = "awaiting_decision" if need and not dropped else "succeeded"
+            status = (
+                "awaiting_ci"
+                if code_pr
+                else ("awaiting_decision" if need and not dropped else "succeeded")
+            )
             next_task = transition(
                 connection,
                 task["id"],
@@ -597,7 +731,7 @@ class Worker:
                     next_task["version"],
                     [Reason(code="dropped" if dropped else "completed")],
                 )
-            else:
+            elif status == "awaiting_decision":
                 question = (
                     receipt.human_action.question
                     if receipt.human_action
@@ -663,6 +797,10 @@ class Worker:
                 return {"task_id": task["id"], "status": current["status"]}
             if deferred := checkpoints.defer_if_paused(connection, task):
                 return deferred
+            from pa.obs.breaker import record_failure
+
+            if result.error_kind in ("transient", "auth", "quota", "invalid_output", "fatal"):
+                record_failure(connection, engine_id, kind=result.error_kind)
             if current["retry_count"] < config.main.limits.max_retry:
                 next_task = transition(
                     connection,
@@ -746,6 +884,12 @@ class Worker:
             "task_token_limit": "任务累计 token 用量已达上限，需要你接手处理。",
             "task_timeout": "任务累计执行时间已达上限，需要你接手处理。",
             "task_turn_limit": "任务累计轮数额度已达上限，需要你接手处理。",
+            "task_money_limit": (
+                "金额预算或保守预留额度不足，或尚未配置有效单价，需要你核实后继续。"
+            ),
+            "code_setup_failed": (
+                "代码工作区未能准备完成，请核实 code.yaml 中的仓库许可和本地 Git 环境。"
+            ),
             "task_turn_usage_unknown": (
                 "此任务的历史轮数无法确认。请核实既有运行记录后决定如何继续。"
             ),

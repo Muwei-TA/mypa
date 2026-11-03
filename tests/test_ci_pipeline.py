@@ -29,9 +29,14 @@ def test_token_ratio_bounds():
 
 def test_record_review_row(configured):
     task = configured.emit(
-        __import__("pa.ingress.manual", fromlist=["ManualAdapter"]).ManualAdapter().parse(
-            {"type": "manual.test", "payload": {"skill": "sample-direct", "text": "x"},
-             "dedup_key": "rv-1"}
+        __import__("pa.ingress.manual", fromlist=["ManualAdapter"])
+        .ManualAdapter()
+        .parse(
+            {
+                "type": "manual.test",
+                "payload": {"skill": "sample-direct", "text": "x"},
+                "dedup_key": "rv-1",
+            }
         )
     )["tasks"][0]
     with transaction(configured.engine) as c:
@@ -45,13 +50,23 @@ def test_record_review_row(configured):
         )
         result = review_verdict([{"severity": "major", "title": "bug"}])
         record_review(
-            c, pr_id=pr_id, round_=1, engine_id="hermes", model="m2",
-            result=result, tokens=80, task_tokens=1000,
+            c,
+            pr_id=pr_id,
+            round_=1,
+            engine_id="hermes",
+            model="m2",
+            result=result,
+            tokens=80,
+            task_tokens=1000,
         )
-        row = c.execute(
-            text("SELECT verdict,token_ratio,issues_json FROM reviews WHERE pr_id=:p"),
-            {"p": pr_id},
-        ).mappings().one()
+        row = (
+            c.execute(
+                text("SELECT verdict,token_ratio,issues_json FROM reviews WHERE pr_id=:p"),
+                {"p": pr_id},
+            )
+            .mappings()
+            .one()
+        )
     assert row["verdict"] == "request_changes"
     assert 0.07 < row["token_ratio"] < 0.09
     assert "major" in row["issues_json"]
@@ -70,9 +85,14 @@ def test_pipeline_stage_order():
 
 def test_fix_round_escalation(configured):
     task = configured.emit(
-        __import__("pa.ingress.manual", fromlist=["ManualAdapter"]).ManualAdapter().parse(
-            {"type": "manual.test", "payload": {"skill": "sample-direct", "text": "x"},
-             "dedup_key": "fr-1"}
+        __import__("pa.ingress.manual", fromlist=["ManualAdapter"])
+        .ManualAdapter()
+        .parse(
+            {
+                "type": "manual.test",
+                "payload": {"skill": "sample-direct", "text": "x"},
+                "dedup_key": "fr-1",
+            }
         )
     )["tasks"][0]
     with transaction(configured.engine) as c:
@@ -85,9 +105,7 @@ def test_fix_round_escalation(configured):
         third = fix_round(c, task, max_rounds=3)
     assert third["fix_round"] == 3 and third["escalated"] is True
     with configured.engine.connect() as c:
-        status = c.execute(
-            text("SELECT status FROM tasks WHERE id=:t"), {"t": task}
-        ).scalar_one()
+        status = c.execute(text("SELECT status FROM tasks WHERE id=:t"), {"t": task}).scalar_one()
     assert status == "awaiting_decision"
 
 
@@ -100,9 +118,7 @@ def test_release_hooks():
     assert asyncio.run(release_hook("none"))["released"] is True
     out = asyncio.run(release_hook("tag", sha="abcdef123456"))
     assert out["tag"] == "pa-release-abcdef12"
-    out = asyncio.run(
-        release_hook("script", script="exit 0")
-    )
+    out = asyncio.run(release_hook("script", script="exit 0"))
     assert out["released"] is True
     try:
         asyncio.run(release_hook("script", script="exit 1"))
@@ -125,7 +141,9 @@ def test_version_endpoint_contains(tmp_path):
     subprocess.run(["git", "add", "."], cwd=src, capture_output=True, check=True)
     subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "c1"],
-        cwd=src, capture_output=True, check=True,
+        cwd=src,
+        capture_output=True,
+        check=True,
     )
     base = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=src, capture_output=True, text=True, check=True
@@ -134,7 +152,9 @@ def test_version_endpoint_contains(tmp_path):
     subprocess.run(["git", "add", "."], cwd=src, capture_output=True, check=True)
     subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "c2"],
-        cwd=src, capture_output=True, check=True,
+        cwd=src,
+        capture_output=True,
+        check=True,
     )
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=src, capture_output=True, text=True, check=True
@@ -156,7 +176,9 @@ def test_version_endpoint_retries_then_fails(tmp_path):
     subprocess.run(["git", "add", "."], cwd=src, capture_output=True, check=True)
     subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "c1"],
-        cwd=src, capture_output=True, check=True,
+        cwd=src,
+        capture_output=True,
+        check=True,
     )
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=src, capture_output=True, text=True, check=True
@@ -165,8 +187,12 @@ def test_version_endpoint_retries_then_fails(tmp_path):
     # merged==live passes trivially; use a bogus merged sha to force failure.
     out = asyncio.run(
         verify_hook(
-            "version_endpoint", mirror=src,
-            merged_sha="0" * 40, live_sha=head, attempts=2, interval_s=0.01,
+            "version_endpoint",
+            mirror=src,
+            merged_sha="0" * 40,
+            live_sha=head,
+            attempts=2,
+            interval_s=0.01,
         )
     )
     assert out["verified"] is False

@@ -31,10 +31,19 @@ def test_builtin_tools_complete():
     }
     for tool in BUILTIN_TOOLS.values():
         assert tool.schema["type"] == "object"
-        assert set(tool.permissions) <= {"network", "fs", *{
-            "delete_data", "stop_service", "spend_money", "external_message",
-            "product_direction", "secret_change", "permission_change",
-        }}
+        assert set(tool.permissions) <= {
+            "network",
+            "fs",
+            *{
+                "delete_data",
+                "stop_service",
+                "spend_money",
+                "external_message",
+                "product_direction",
+                "secret_change",
+                "permission_change",
+            },
+        }
 
 
 def test_permissions_validation():
@@ -108,9 +117,7 @@ def _server(skill_id="sample-code"):
 def test_mcp_session_tools_list_and_call():
     server, skill = _server()
     token = server.open_session("task-3", skill)
-    listing = server.handle(
-        b'{"token": "%s", "method": "tools/list"}' % token.encode()
-    )
+    listing = server.handle(b'{"token": "%s", "method": "tools/list"}' % token.encode())
     names = {tool["name"] for tool in listing["result"]["tools"]}
     assert names == {"read_url", "memory_search"}
     executed = []
@@ -134,9 +141,7 @@ def test_mcp_unknown_token_and_method():
     unknown = server.handle(b'{"token": "nope", "method": "tools/list"}')
     assert unknown == {"error": "unknown_token"}
     token = next(iter(server.sessions))
-    bad_method = server.handle(
-        b'{"token": "%s", "method": "resources/list"}' % token.encode()
-    )
+    bad_method = server.handle(b'{"token": "%s", "method": "resources/list"}' % token.encode())
     assert bad_method == {"error": "unknown_method"}
     invalid = server.handle(b"not json")
     assert invalid == {"error": "invalid_json"}
@@ -165,9 +170,7 @@ def test_mcp_close_session_revokes_token():
     server, skill = _server()
     token = server.open_session("task-6", skill)
     server.close_session(token)
-    revoked = server.handle(
-        b'{"token": "%s", "method": "tools/list"}' % token.encode()
-    )
+    revoked = server.handle(b'{"token": "%s", "method": "tools/list"}' % token.encode())
     assert revoked == {"error": "unknown_token"}
 
 
@@ -214,16 +217,23 @@ def test_registry_records_gate_call_via_judge(configured):
     )["tasks"][0]
     with transaction(configured.engine) as c:
         add_precedent(
-            c, kind="precedent_decided", scope="global",
-            title="允许发飞书通知", content="例行通知可以直接发送",
+            c,
+            kind="precedent_decided",
+            scope="global",
+            title="允许发飞书通知",
+            content="例行通知可以直接发送",
         )
         verdict = check_precedent(c, question="例行通知可以直接发送吗？")
     assert verdict["status"] == "hit"
     # no precedent: judge would create a decision card instead
     with transaction(configured.engine) as c:
         create_decision(
-            c, task_id=task, kind="tool_gate", question="发送外部消息？",
-            recommend="approve", options=["approve", "reject"],
+            c,
+            task_id=task,
+            kind="tool_gate",
+            question="发送外部消息？",
+            recommend="approve",
+            options=["approve", "reject"],
             expires_at="2026-12-01T00:00:00+00:00",
         )
         count = c.execute(text("SELECT COUNT(*) FROM decisions")).scalar_one()

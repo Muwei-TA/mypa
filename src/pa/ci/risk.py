@@ -49,8 +49,7 @@ def hard_risk(diff: Diff, *, tags: list[str] | None = None, seven_tags: frozense
     if diff.changed_lines >= 50:
         return "medium"
     docs_only = all(
-        _matches_any(f["path"], LOW_PATTERNS)
-        or f["path"].endswith(LOW_CONFIG_SUFFIXES)
+        _matches_any(f["path"], LOW_PATTERNS) or f["path"].endswith(LOW_CONFIG_SUFFIXES)
         for f in diff.files
     )
     return "low" if docs_only and diff.changed_lines < 50 else "medium"

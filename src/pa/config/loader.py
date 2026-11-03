@@ -93,6 +93,7 @@ def load(config_dir: Path) -> LoadedConfig:
         notify=models["notify.yaml"],
         schedules=models["schedules.yaml"],
         merge_policy=models["merge_policy.yaml"],
+        code=models["code.yaml"],
         raw=raw,
         policy_version="p-" + hashlib.sha256(canon.encode()).hexdigest()[:6],
     )

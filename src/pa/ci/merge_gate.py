@@ -17,7 +17,14 @@ def merge_gate(policy, *, repo: str, risk: str, checks) -> dict:
     confirm_no_auto_release.
     """
     klass = repo_class(repo, policy)
-    cell = policy.matrix[klass]
+    cell = policy.matrix.get(klass)
+    if cell is None:
+        return {
+            "repo_class": klass,
+            "risk": risk,
+            "action": "blocked",
+            "reason": "merge policy is not configured",
+        }
     action = getattr(cell, risk)
     if not checks.all_required_passed:
         return {

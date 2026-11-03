@@ -55,9 +55,7 @@ def test_stage_owner_answer(configured):
 def test_stage_owner_review(configured):
     task = _task(configured, "st-3")
     with transaction(configured.engine) as c:
-        c.execute(
-            text("UPDATE tasks SET status='succeeded' WHERE id=:id"), {"id": task}
-        )
+        c.execute(text("UPDATE tasks SET status='succeeded' WHERE id=:id"), {"id": task})
         c.execute(
             text("""
             INSERT INTO pull_requests(id,task_id,scm,repo,number,url,ci_stage)

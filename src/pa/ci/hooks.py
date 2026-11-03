@@ -14,8 +14,16 @@ from pathlib import Path
 from pa.common import PAError
 
 
-async def release_hook(kind: str, *, adapter=None, repo: str = "", sha: str = "",
-                       workflow: str = "", ref: str = "", script: str = "") -> dict:
+async def release_hook(
+    kind: str,
+    *,
+    adapter=None,
+    repo: str = "",
+    sha: str = "",
+    workflow: str = "",
+    ref: str = "",
+    script: str = "",
+) -> dict:
     if kind == "none":
         return {"released": True, "hook": "none"}
     if kind == "tag":
@@ -59,9 +67,16 @@ def version_contains(mirror: Path, merged_sha: str, live_sha: str) -> bool:
     return result.returncode == 0
 
 
-async def verify_hook(kind: str, *, args: dict | None = None, mirror: Path | None = None,
-                      merged_sha: str = "", live_sha: str = "",
-                      attempts: int = 20, interval_s: float = 30.0) -> dict:
+async def verify_hook(
+    kind: str,
+    *,
+    args: dict | None = None,
+    mirror: Path | None = None,
+    merged_sha: str = "",
+    live_sha: str = "",
+    attempts: int = 20,
+    interval_s: float = 30.0,
+) -> dict:
     """Verify the live deployment includes the merge; retry for 10 minutes."""
     args = args or {}
     if kind == "none":

@@ -46,9 +46,7 @@ def verify_totp(secret_key: str | bytes, code: str, *, at: float | None = None) 
         key = secret_key
     moment = at if at is not None else time.time()
     counter = int(moment // 30)
-    return any(
-        hmac.compare_digest(_totp_at(key, counter + delta), code) for delta in (-1, 0, 1)
-    )
+    return any(hmac.compare_digest(_totp_at(key, counter + delta), code) for delta in (-1, 0, 1))
 
 
 def _sign(value: str, server_secret: str) -> str:
@@ -112,11 +110,15 @@ class LoginService:
         payload = f"{token}.{expires}"
         if not hmac.compare_digest(signature, _sign(payload, self.server_secret)):
             return None
-        if time.time() > int(expires):
+        try:
+            expires_at = int(expires)
+        except ValueError:
+            return None
+        if time.time() > expires_at:
             return None
         # CSRF token derives from the session token so it is bound per session.
         csrf = _sign(token, "csrf:" + self.server_secret)[:32]
-        return Session(token=token, csrf=csrf, expires_at=int(expires))
+        return Session(token=token, csrf=csrf, expires_at=expires_at)
 
     def check_csrf(self, session: Session, presented: str | None) -> bool:
         return bool(presented) and hmac.compare_digest(session.csrf, presented)

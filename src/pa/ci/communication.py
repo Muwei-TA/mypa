@@ -46,6 +46,5 @@ def review_resolution(*, fixed_issues: list[dict], declined: list[tuple[dict, st
 def duplicate_close_comment(*, owner_pr_url: str) -> str:
     """Close own PR and point at the owner's PR (D16)."""
     return (
-        f"{AGENT_MARK}\n检测到该分支的改动已包含在你的 PR 中，"
-        f"关闭此 PR，请以 {owner_pr_url} 为准。"
+        f"{AGENT_MARK}\n检测到该分支的改动已包含在你的 PR 中，关闭此 PR，请以 {owner_pr_url} 为准。"
     )

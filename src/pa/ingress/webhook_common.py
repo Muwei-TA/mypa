@@ -222,9 +222,7 @@ def parse_gitea_comment(payload: dict) -> Event:
     if not isinstance(action, str):
         action = "created"
     number = target.get("number", 0)
-    thread = (
-        f"gitea:{repo}:pulls:{number}" if on_pr else f"gitea:{repo}:issues:{number}"
-    )
+    thread = f"gitea:{repo}:pulls:{number}" if on_pr else f"gitea:{repo}:issues:{number}"
     return _event(
         platform="gitea",
         event_type=f"gitea.comment.{action}",

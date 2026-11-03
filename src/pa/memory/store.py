@@ -119,8 +119,9 @@ def _score(connection, query: str, row: dict) -> float:
     if ascii_query:
         try:
             hit = connection.exec_driver_sql(
-                "SELECT rank FROM memories_fts WHERE memories_fts MATCH :q LIMIT 1",
-                {"q": ascii_query},
+                "SELECT rank FROM memories_fts WHERE memories_fts MATCH :q "
+                "AND rowid=(SELECT rowid FROM memories WHERE id=:id) LIMIT 1",
+                {"q": ascii_query, "id": row["id"]},
             ).fetchone()
             if hit:
                 return 1.0

@@ -19,8 +19,10 @@ from pa.workspace.mirror import (
 
 def _init_repo(path: Path) -> Path:
     path.mkdir(parents=True)
+
     def git(*args):
         subprocess.run(["git", *args], cwd=path, capture_output=True, check=True)
+
     git("init", "-b", "main")
     (path / "hello.txt").write_text("hello")
     git("add", ".")
@@ -42,8 +44,11 @@ def test_ensure_mirror_and_worktree(tmp_path):
     worktree = add_worktree(data, mirror, "task-1", "main")
     assert (worktree / "hello.txt").exists()
     branch = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree,
-        capture_output=True, text=True, check=True,
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert branch == "pa/task-1"
 
@@ -95,8 +100,11 @@ def _emit_task(facade, dedup):
 
     return facade.emit(
         ManualAdapter().parse(
-            {"type": "manual.test", "payload": {"skill": "sample-direct", "text": "hi"},
-             "dedup_key": dedup}
+            {
+                "type": "manual.test",
+                "payload": {"skill": "sample-direct", "text": "hi"},
+                "dedup_key": dedup,
+            }
         )
     )["tasks"][0]
 
@@ -106,8 +114,11 @@ def test_subscribe_and_route_running_task(configured):
     with transaction(configured.engine) as c:
         subscribe(c, task_id=task, thread_ref="github:o/r:issues:12")
         out = route(
-            c, configured.config, thread_ref="github:o/r:issues:12",
-            actor="github:owner", body="再改一下 X",
+            c,
+            configured.config,
+            thread_ref="github:o/r:issues:12",
+            actor="github:owner",
+            body="再改一下 X",
         )
     assert out["action"] == "deliver" and out["task_id"] == task
 
@@ -117,8 +128,11 @@ def test_context_only_subscription_has_no_authority(configured):
     with transaction(configured.engine) as c:
         subscribe(c, task_id=task, thread_ref="github:o/r:issues:13", context_only=True)
         out = route(
-            c, configured.config, thread_ref="github:o/r:issues:13",
-            actor="github:owner", body="context",
+            c,
+            configured.config,
+            thread_ref="github:o/r:issues:13",
+            actor="github:owner",
+            body="context",
         )
     assert out["action"] == "context_only"
 
@@ -126,18 +140,22 @@ def test_context_only_subscription_has_no_authority(configured):
 def test_bot_cannot_wake_ended_task(configured):
     task = _emit_task(configured, "sub-3")
     with transaction(configured.engine) as c:
-        c.execute(
-            text("UPDATE tasks SET status='closed' WHERE id=:t"), {"t": task}
-        )
+        c.execute(text("UPDATE tasks SET status='closed' WHERE id=:t"), {"t": task})
     with transaction(configured.engine) as c:
         subscribe(c, task_id=task, thread_ref="github:o/r:issues:14")
         bot = route(
-            c, configured.config, thread_ref="github:o/r:issues:14",
-            actor="github:dependabot[bot]", body="bump",
+            c,
+            configured.config,
+            thread_ref="github:o/r:issues:14",
+            actor="github:dependabot[bot]",
+            body="bump",
         )
         human = route(
-            c, configured.config, thread_ref="github:o/r:issues:14",
-            actor="github:owner", body="再改一下",
+            c,
+            configured.config,
+            thread_ref="github:o/r:issues:14",
+            actor="github:owner",
+            body="再改一下",
         )
     assert bot["action"] == "none" and "bot" in bot["reason"]
     # closed with an inferred mandate in observe mode: mandate invalid -> reenter.
@@ -156,8 +174,11 @@ def test_subscription_expiry(configured):
         )
     with transaction(configured.engine) as c:
         out = route(
-            c, configured.config, thread_ref="github:o/r:issues:15",
-            actor="github:owner", body="hi",
+            c,
+            configured.config,
+            thread_ref="github:o/r:issues:15",
+            actor="github:owner",
+            body="hi",
         )
     assert out["action"] == "none" and out["reason"] == "subscription expired"
 

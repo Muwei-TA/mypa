@@ -159,9 +159,7 @@ def e2e_env_notify(tmp_path):
     config_dir.joinpath("notify.yaml").write_text(
         yaml.safe_dump({"target": {"type": "user", "id": "ou_e2e"}}, sort_keys=False)
     )
-    result = _run(
-        ["doctor"], config_dir, env={**os.environ, "PA_TEST_FEISHU": "e2e-secret"}
-    )
+    result = _run(["doctor"], config_dir, env={**os.environ, "PA_TEST_FEISHU": "e2e-secret"})
     assert result.returncode == 0, result.stderr
     return config_dir
 
@@ -201,9 +199,7 @@ def test_e2e_01_manual_emit_to_closed(e2e_env_notify):
     assert rows[0]["status"] == "closed", rows
     # notify=result produced a P2 card: buffered before the merge window, or
     # already flushed into the outbox. Either artifact proves the chain ran.
-    buffer_rows = _db(
-        config_dir, "SELECT value FROM system_state WHERE key='notify_p2_buffer'"
-    )
+    buffer_rows = _db(config_dir, "SELECT value FROM system_state WHERE key='notify_p2_buffer'")
     outbox = _db(config_dir, "SELECT status FROM effects")
     assert buffer_rows or outbox, "no notification artifact was produced"
 
@@ -250,9 +246,7 @@ def test_e2e_02_kill_worker_no_duplicate_execution(e2e_env):
         rows = _db(e2e_env, "SELECT value FROM system_state WHERE key='core_lock'")
         if not rows:
             return True
-        return datetime.fromisoformat(json.loads(rows[0]["value"])["until"]) < datetime.now(
-            UTC
-        )
+        return datetime.fromisoformat(json.loads(rows[0]["value"])["until"]) < datetime.now(UTC)
 
     _wait_for(
         _lock_lapsed,
@@ -338,7 +332,7 @@ def _emit_cron(config_dir, *, event_type="cron.alert", payload, dedup_key):
         "from pathlib import Path\n"
         "facade = OwnerFacade(Path(r'" + str(config_dir) + "'))\n"
         "event = CronAdapter().parse({\n"
-        "    'id': '" + dedup_key.split(':')[0] + "',\n"
+        "    'id': '" + dedup_key.split(":")[0] + "',\n"
         "    'scheduled_at': '2026-11-02T00:00:00+00:00',\n"
         "    'event_type': '" + event_type + "',\n"
         "    'payload': json.loads(r'''" + json.dumps(payload, ensure_ascii=False) + "'''),\n"
@@ -369,9 +363,7 @@ def test_e2e_04_observe_rule_records_only(e2e_env):
     observed = _run(["observe", "list", "--json"], e2e_env)
     assert observed.returncode == 0, observed.stderr
     items = json.loads(observed.stdout)["items"]
-    assert any(
-        i["rule_id"] == "r-e2e-observe" and i["would_accept"] == 1 for i in items
-    ), items
+    assert any(i["rule_id"] == "r-e2e-observe" and i["would_accept"] == 1 for i in items), items
 
     _run(["run", "--once"], e2e_env)
     tasks = _db(e2e_env, "SELECT id FROM tasks")

@@ -6,6 +6,7 @@ Repo write locks serialize code tasks per repository; readers run parallel.
 """
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,12 +15,13 @@ from pa.common import PAError
 
 def _git(cwd: Path, *args: str, timeout: int = 120) -> str:
     result = subprocess.run(
-        ["git", *args],
+        ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         timeout=timeout,
         check=False,
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
     )
     if result.returncode != 0:
         raise PAError(f"git {' '.join(args[:2])} failed: {result.stderr.strip()[:300]}")
@@ -79,7 +81,7 @@ class RepoWriteLock:
         return self._locks[repo]
 
     async def acquire(self, repo: str):
-        return self._get(repo).acquire()
+        return await self._get(repo).acquire()
 
     def release(self, repo: str):
         lock = self._locks.get(repo)

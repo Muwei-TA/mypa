@@ -10,9 +10,10 @@ the selector never picks a gui engine for real dispatch.
 from pathlib import Path
 
 from pa.engines.base import EngineRequest, EngineResult
-from pa.engines.gui.driver import SyntheticDriver
+from pa.engines.gui.driver import GUIDriver
 from pa.engines.gui.limits import check_c_tier_limits
 from pa.engines.gui.playbook import Playbook, PlaybookRun
+from pa.skills.receipt import Receipt, Usage
 
 
 class GuiEngine:
@@ -35,7 +36,7 @@ class GuiEngine:
         return self.playbook
 
     async def health(self):
-        driver = self.driver or SyntheticDriver()
+        driver = self.driver or GUIDriver()
         app_path = getattr(self.config, "app_path", None)
         # Real dispatch requires the macOS backend and a configured app.
         return {
@@ -50,7 +51,13 @@ class GuiEngine:
             skill=skill,
             tools=getattr(skill, "tools", None) if skill else None,
         )
-        driver = self.driver or SyntheticDriver()
+        driver = self.driver or GUIDriver()
+        if not driver.available:
+            return EngineResult(
+                engine_id=self.id,
+                error="macOS GUI driver is not configured",
+                error_kind="unavailable",
+            )
         run = PlaybookRun(playbook, driver, screenshot_dir=request.output_dir / "shots")
         result = run.execute(prompt=request.prompt)
         if result["status"] != "succeeded":
@@ -59,4 +66,16 @@ class GuiEngine:
                 error=result.get("detail") or "playbook failed",
                 error_kind=result.get("error_kind", "ui_drift"),
             )
-        return EngineResult(engine_id=self.id, turns=1, log_path=None)
+        return EngineResult(
+            engine_id=self.id,
+            turns=1,
+            receipt=Receipt(
+                status="needs_human",
+                summary=str(result.get("reply") or "GUI output missing"),
+                code_changed=False,
+                confidence=0.6,
+                risk="low",
+                evidence=[],
+                usage=Usage(),
+            ),
+        )

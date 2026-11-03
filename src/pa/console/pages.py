@@ -107,6 +107,10 @@ def build_pages_router(login_service, facade) -> APIRouter:
 
     @router.get("/decisions-page", response_class=HTMLResponse)
     def decisions_page(request: Request, status: str = "pending"):
+        import json
+
+        from pa.hub.decisions import LEGACY_OPTIONS
+
         guard(request)
         with facade.engine.connect() as connection:
             rows = [
@@ -116,6 +120,17 @@ def build_pages_router(login_service, facade) -> APIRouter:
                     {"s": status},
                 ).mappings()
             ]
+        labels = {
+            "approve": "同意",
+            "reject": "拒绝",
+            "retry": "重试",
+            "retry_other_engine": "换引擎重试",
+            "take_over": "我接手",
+            "one_more_round": "再给一轮",
+        }
+        for row in rows:
+            options = json.loads(row["options_json"]) if row["options_json"] else LEGACY_OPTIONS
+            row["options"] = [{"id": o, "label": labels.get(o, o)} for o in options]
         return templates.TemplateResponse(
             request, "decisions.html", {"decisions": rows, "status": status}
         )

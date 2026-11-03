@@ -39,8 +39,14 @@ class GUIDriver:
     def press_hotkey(self, combo: str) -> StepOutcome:
         raise NotImplementedError
 
-    def wait_for(self, *, role: str | None = None, title: str | None = None,
-                 title_absent: str | None = None, timeout_s: float) -> StepOutcome:
+    def wait_for(
+        self,
+        *,
+        role: str | None = None,
+        title: str | None = None,
+        title_absent: str | None = None,
+        timeout_s: float,
+    ) -> StepOutcome:
         raise NotImplementedError
 
     def paste_text(self, text: str) -> StepOutcome:

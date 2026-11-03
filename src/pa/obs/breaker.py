@@ -47,12 +47,12 @@ def record_failure(connection, engine_id: str, *, kind: str = "transient") -> di
         )
         row = connection.execute(
             text(
-                "SELECT breaker_state,breaker_until,last_err "
-                "FROM engine_health WHERE engine_id=:e"
+                "SELECT breaker_state,breaker_until,last_err FROM engine_health WHERE engine_id=:e"
             ),
             {"e": engine_id},
         ).first()
-    # count recent failures via the event log kept in last_err streak form
+    from pa.common import new_id
+
     state = row[0] or "closed"
     if state == "open":
         until = _parse(row[1])
@@ -60,6 +60,25 @@ def record_failure(connection, engine_id: str, *, kind: str = "transient") -> di
             state = "closed"  # cooldown elapsed: allow a probe run
         else:
             return {"engine_id": engine_id, "state": "open", "until": row[1]}
+    cutoff = (now - timedelta(minutes=WINDOW_MIN)).isoformat()
+    connection.execute(text("DELETE FROM engine_failures WHERE at<:cutoff"), {"cutoff": cutoff})
+    connection.execute(
+        text("INSERT INTO engine_failures(id,engine_id,kind,at) VALUES(:id,:e,:kind,:at)"),
+        {"id": new_id(), "e": engine_id, "kind": kind, "at": now.isoformat()},
+    )
+    failures = connection.execute(
+        text("SELECT count(*) FROM engine_failures WHERE engine_id=:e AND at>=:cutoff"),
+        {"e": engine_id, "cutoff": cutoff},
+    ).scalar_one()
+    if failures < FAIL_THRESHOLD:
+        connection.execute(
+            text(
+                "UPDATE engine_health SET status='error',last_err=:kind,"
+                "breaker_state='closed',breaker_until=NULL WHERE engine_id=:e"
+            ),
+            {"kind": kind, "e": engine_id},
+        )
+        return {"engine_id": engine_id, "state": "closed", "failures": failures}
     connection.execute(
         text("""
         UPDATE engine_health SET status='error',last_err=:err,
@@ -80,6 +99,7 @@ def record_success(connection, engine_id: str) -> dict:
     """A healthy run closes the breaker and refreshes last_ok_at."""
     from pa.common import now as now_str
 
+    connection.execute(text("DELETE FROM engine_failures WHERE engine_id=:e"), {"e": engine_id})
     connection.execute(
         text("""
         INSERT INTO engine_health(engine_id,status,last_ok_at,last_err,
@@ -107,6 +127,7 @@ def is_open(connection, engine_id: str) -> bool:
 
 def reset(connection, engine_id: str) -> dict:
     """Manual reset (owner judgement via CLI/API)."""
+    connection.execute(text("DELETE FROM engine_failures WHERE engine_id=:e"), {"e": engine_id})
     connection.execute(
         text("""
         UPDATE engine_health SET breaker_state='closed',breaker_until=NULL

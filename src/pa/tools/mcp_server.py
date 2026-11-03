@@ -52,7 +52,9 @@ class McpServer:
             if not decision["ok"]:
                 return {"error": decision["reason"]}
             gates = decision["requires_approval"]
-            if gates and self.judge is not None:
+            if gates and self.judge is None:
+                return {"error": "needs_approval", "decision": None}
+            if gates:
                 verdict = self.judge(name, arguments, gates)
                 if not verdict.get("allowed"):
                     return {

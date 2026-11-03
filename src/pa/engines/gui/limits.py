@@ -21,7 +21,9 @@ def check_c_tier_limits(*, skill, tools: list[str] | None = None) -> dict:
     ceiling = getattr(skill, "risk_ceiling", None)
     if ceiling != "low":
         raise PAError("C-tier engine requires skill risk_ceiling=low (hard rule)", "forbidden", 3)
-    if getattr(skill, "repo_write", False):
+    if getattr(getattr(skill, "permissions", None), "repo_write", False) or getattr(
+        skill, "repo_write", False
+    ):
         raise PAError("C-tier engines cannot edit code (can_edit_code=false)", "forbidden", 3)
     skill_tools = list(getattr(skill, "tools", None) or [])
     for tool in skill_tools + list(tools or []):

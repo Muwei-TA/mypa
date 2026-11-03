@@ -1,6 +1,5 @@
 """M3-04 console login (TOTP/CSRF/cookies) and M3-07 overview feed."""
 
-
 from sqlalchemy import text
 
 from pa.console.auth import (

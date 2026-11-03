@@ -183,8 +183,7 @@ class GiteaAdapter(ScmAdapter):
         if self.allowed_ips:
             client_ip = headers.get("X-Forwarded-For", headers.get("X-Real-IP", ""))
             if not any(
-                client_ip == ip or client_ip.startswith(ip.rstrip("*"))
-                for ip in self.allowed_ips
+                client_ip == ip or client_ip.startswith(ip.rstrip("*")) for ip in self.allowed_ips
             ):
                 return False
         return verify_hmac(self.webhook_secret, body, headers.get("X-Gitea-Signature"))
