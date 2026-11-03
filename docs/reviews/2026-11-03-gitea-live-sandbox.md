@@ -57,3 +57,15 @@ Next owner action: create least-privilege PATs in each user's own Gitea account 
 - GitHub and NAS Gitea Actions both reported **success** for MyPA's preceding `295ef90` review-integration commit. A subsequent `4fa515d` patch rejects identical agent/merger secret references and identical resolved credential values.
 - `scripts/setup-gitea-sandbox-credentials.py` is a local TTY-only handoff, not a bot credential generator. The owner must create the separate account PATs from Gitea and enter each into the Mac terminal (no chat/token echo). `tests/test_gitea_sandbox_credential_setup.py` verifies wrong principal rejection, production-write rejection, private file modes, and overwrite refusal.
 - **Not yet validated:** Gitea PR creation and status updates with the actual `pa-agent-e2e` token; agent-identity forbidden merge; Merger-only positive merge with fresh owner approval; real release/live SHA. These depend on the user-supplied account PATs.
+
+## Mac MCP Chrome UI cross-check (2026-11-03)
+
+The Gitea sandbox was inspected **directly in the logged-in Chrome browser on the Mac** via `macos-mcp` (no admin-token extraction, no production mutation). Existing saved settings were confirmed visually; no permission/rule change was necessary:
+
+- Repository `muwei/pa-v11-acceptance-sandbox` → Settings → Collaborators shows `pa-agent-e2e` and `pa-merger-e2e` both with **Write** access.
+- Settings → Branches → edit protected `main`: normal push is **disabled**, force push is **disabled**, and required status checks are enabled with exactly `PA v1.1 Sandbox CI / ci (pull_request)` and `pa/ai-review`.
+- Merge control is explicitly set to **merge whitelist**, containing only `pa-merger-e2e`. The option to bypass branch protection is **unchecked**, and **administrators must obey branch protection** is checked.
+- The Gitea rule currently specifies **0 mandatory Gitea PR approvals**; therefore owner confirmation remains an application-level PA decision gate until a separate server-side review policy is explicitly adopted and tested. Do **not** claim platform-enforced human approval from the whitelist alone.
+- On the Mac, `~/Library/Application Support/PA-acceptance-secrets` is **absent** (not a credential inspection); no service-account PAT has been installed in PA. The next PA-native authenticated API E2E remains blocked pending local, user-entered credentials through `scripts/setup-gitea-sandbox-credentials.py`.
+
+This browser inspection complements the earlier authenticated read-only API results. It does **not** prove live denial using the `pa-agent-e2e` API identity, since that identity's token has not been supplied or validated.
