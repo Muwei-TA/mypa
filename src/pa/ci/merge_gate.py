@@ -26,6 +26,15 @@ def merge_gate(policy, *, repo: str, risk: str, checks) -> dict:
             "reason": "merge policy is not configured",
         }
     action = getattr(cell, risk)
+    # Never automatically merge a high-risk change, even when an unchecked
+    # policy object bypasses schema validation.
+    if risk == "high" and action in {"auto_release", "auto_merge_notify"}:
+        return {
+            "repo_class": klass,
+            "risk": risk,
+            "action": "blocked",
+            "reason": "high-risk changes require owner confirmation",
+        }
     if not checks.all_required_passed:
         return {
             "repo_class": klass,

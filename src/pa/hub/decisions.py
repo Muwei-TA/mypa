@@ -89,11 +89,14 @@ def submit(connection, decision_id, option, *, actor="owner", source="manual", s
         elif option in ("reject", "take_over"):
             target = "suspended"
         elif option == "approve":
-            target = "running" if row["kind"] in ("merge_confirm", "tool_gate") else "closed"
+            # A PR approval is a permission to attempt the merge after a
+            # *fresh* SHA/check review; it never marks code delivered.
+            if row["kind"] in ("merge_confirm", "merge_review", "release_review"):
+                target = "awaiting_ci"
+            else:
+                target = "running" if row["kind"] == "tool_gate" else "closed"
         if target:
-            current = transition(connection, task["id"], target, task["version"], reason)
-            if row["kind"] == "merge_confirm" and target == "running":
-                transition(connection, task["id"], "awaiting_ci", current["version"], reason)
+            transition(connection, task["id"], target, task["version"], reason)
             connection.execute(
                 text(
                     "UPDATE tasks SET lease_owner=NULL,lease_until=NULL,lease_engine_id=NULL,"

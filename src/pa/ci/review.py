@@ -73,7 +73,7 @@ def record_review(
 
 async def write_review_status(adapter, repo: str, sha: str, result: dict) -> None:
     """pa/ai-review commit status (K6): success only on approve/comment."""
-    state = "success" if result["verdict"] == "approve" else "failure"
+    state = "success" if result["verdict"] in {"approve", "comment"} else "failure"
     await adapter.set_status(
         repo,
         sha,

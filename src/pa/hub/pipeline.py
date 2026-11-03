@@ -72,6 +72,71 @@ def ingest(connection: Connection, event: Event, config: LoadedConfig) -> dict:
         },
     )
     task_ids = []
+    # A verified owner comment on a subscribed Issue or PR is part of that
+    # task, not a new unrelated issue. The context is attached durably and
+    # waiting/closed tasks are requeued after the subscription's checks.
+    if principal and event.source in {"github", "gitea"} and ".comment." in event.type:
+        from pa.hub.subscriptions import route as route_thread
+        from pa.store.models import Reason
+        from pa.store.transitions import transition
+
+        for thread in event.threads:
+            routed = route_thread(
+                connection,
+                config,
+                thread_ref=thread,
+                actor=event.actor or "",
+                body=event.payload.get("body", ""),
+            )
+            if routed["action"] not in {"deliver", "resume"}:
+                continue
+            task_id = routed["task_id"]
+            current = (
+                connection.execute(text("SELECT * FROM tasks WHERE id=:id"), {"id": task_id})
+                .mappings()
+                .one()
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO task_events(id,task_id,from_status,to_status,"
+                    "reason_json,actor,at) VALUES(:id,:task,NULL,NULL,:reason,:actor,:at)"
+                ),
+                {
+                    "id": new_id(),
+                    "task": task_id,
+                    "actor": event.actor or "owner",
+                    "at": now(),
+                    "reason": json.dumps(
+                        [
+                            {
+                                "code": "context_added",
+                                "values": {"event_id": event.id},
+                            }
+                        ]
+                    ),
+                },
+            )
+            if current["status"] in {"awaiting_ci", "awaiting_decision", "closed"}:
+                if current["status"] == "awaiting_decision":
+                    connection.execute(
+                        text(
+                            "UPDATE decisions SET status='expired' "
+                            "WHERE task_id=:id AND status='pending'"
+                        ),
+                        {"id": task_id},
+                    )
+                transition(
+                    connection,
+                    task_id,
+                    "queued",
+                    current["version"],
+                    [Reason(code="owner_comment_requeue", values={"event_id": event.id})],
+                )
+            return {
+                "event": {"id": event.id, "status": "accepted"},
+                "tasks": [task_id],
+                "subscription": routed["action"],
+            }
     if principal:
         for rule in sorted(config.rules.rules, key=lambda r: (r.rank, r.id)):
             if not rule.enabled or not matches(rule, event):
@@ -168,6 +233,11 @@ def ingest(connection: Connection, event: Event, config: LoadedConfig) -> dict:
                             else rule.concurrency_key,
                         },
                     )
+                if event.source in {"github", "gitea"}:
+                    from pa.hub.subscriptions import subscribe
+
+                    for thread in event.threads:
+                        subscribe(connection, task_id=task_id, thread_ref=thread)
                 task_ids.append(task_id)
             if not rule.continue_:
                 break

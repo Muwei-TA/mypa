@@ -101,14 +101,19 @@ class GiteaAdapter(ScmAdapter):
     async def get_checks(self, repo: str, pr: PR) -> CheckSummary:
         # Gitea commit statuses for the head sha.
         data = await self.client.request("GET", f"/repos/{repo}/statuses/{pr.sha}")
-        contexts = [
-            {
-                "context": item.get("context", ""),
-                "state": item.get("status", "unknown"),
-                "url": item.get("target_url"),
-            }
-            for item in data
-        ]
+        # /statuses/{sha} includes historical attempts. Gitea normally
+        # returns newest first; the newest result for each context wins.
+        # Otherwise an old failure would permanently block a repaired PR.
+        latest = {}
+        for item in data:
+            name = item.get("context", "")
+            if name and name not in latest:
+                latest[name] = {
+                    "context": name,
+                    "state": item.get("status", "unknown"),
+                    "url": item.get("target_url"),
+                }
+        contexts = list(latest.values())
         state = (
             "success"
             if contexts and all(c["state"] == "success" for c in contexts)
@@ -186,4 +191,14 @@ class GiteaAdapter(ScmAdapter):
                 client_ip == ip or client_ip.startswith(ip.rstrip("*")) for ip in self.allowed_ips
             ):
                 return False
-        return verify_hmac(self.webhook_secret, body, headers.get("X-Gitea-Signature"))
+        native = headers.get("X-Gitea-Signature", "")
+        return bool(
+            (
+                native
+                and (
+                    verify_hmac(self.webhook_secret, body, "sha256=" + native)
+                    or verify_hmac(self.webhook_secret, body, native)
+                )
+            )
+            or verify_hmac(self.webhook_secret, body, headers.get("X-Hub-Signature-256"))
+        )

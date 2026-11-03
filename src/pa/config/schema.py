@@ -100,9 +100,7 @@ class MergeMatrixCell(Model):
     medium: Literal[
         "auto_merge_notify", "confirm", "confirm_merge_and_release", "confirm_no_auto_release"
     ]
-    high: Literal[
-        "confirm", "confirm_merge_and_release", "confirm_no_auto_release", "auto_merge_notify"
-    ]
+    high: Literal["confirm", "confirm_merge_and_release", "confirm_no_auto_release"]
 
 
 class MergePolicy(Model):
@@ -338,6 +336,31 @@ class CodeRepository(Model):
     merger_token: str | None = None
     check_command: list[str] = Field(default_factory=list)
     required_checks: list[str] = Field(default_factory=lambda: ["pa/ai-review", "ci"])
+    # MVP delivery hooks: explicit workflow trigger and externally observable
+    # HTTP readiness. Commit-ancestry version verification remains a later gate.
+    release_hook: Literal["none", "workflow_dispatch"] = "none"
+    release_workflow: str = ""
+    verify_hook: Literal["none", "http_check"] = "none"
+    verify_url: str = ""
+    verify_status: int = Field(default=200, ge=100, le=599)
+    verify_keyword: str = ""
+
+    @model_validator(mode="after")
+    def enforce_remote_review_checks(self):
+        # These two contexts are the immutable PRD v1.1 K6/K9 safety floor.
+        # Local workspaces have no platform check-run or commit-status API.
+        mandatory = {"pa/ai-review", "ci"}
+        if self.scm != "local" and not mandatory.issubset(self.required_checks):
+            raise ValueError("remote repositories must require pa/ai-review and ci")
+        if len(self.required_checks) != len(set(self.required_checks)):
+            raise ValueError("required_checks must not contain duplicates")
+        if self.release_hook == "workflow_dispatch" and not self.release_workflow:
+            raise ValueError("release workflow name is required")
+        if self.verify_hook == "http_check" and not self.verify_url.startswith(
+            ("https://", "http://")
+        ):
+            raise ValueError("HTTP verification URL is required")
+        return self
 
     @field_validator("remote")
     @classmethod

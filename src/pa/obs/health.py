@@ -6,6 +6,8 @@ after 3 consecutive failures — flapping does not spam the overview.
 
 from dataclasses import dataclass
 
+from sqlalchemy import text
+
 CHECK_INTERVAL_MIN = 5
 FAIL_THRESHOLD = 3
 
@@ -41,7 +43,7 @@ def run_checks(
     alive = alive or {}
     results = []
     try:
-        connection.execute("SELECT 1 FROM system_state LIMIT 1".replace("system_state", "events"))
+        connection.execute(text("SELECT 1 FROM events LIMIT 1"))
         db_ok = True
         detail = ""
     except Exception as exc:  # pragma: no cover - failure path only

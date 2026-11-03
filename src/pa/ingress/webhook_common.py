@@ -36,9 +36,19 @@ class WebhookGuard:
             if now - self._blacklist[ip] < self.blacklist_s:
                 return False, "blacklisted"
             del self._blacklist[ip]
-        signature = headers.get("X-Hub-Signature-256") or headers.get("X-Gitea-Signature")
-        expected = "sha256=" + hmac.new(self.secret.encode(), body, hashlib.sha256).hexdigest()
-        if not signature or not hmac.compare_digest(expected, signature):
+        github_sig = headers.get("X-Hub-Signature-256", "")
+        gitea_sig = headers.get("X-Gitea-Signature", "")
+        digest = hmac.new(self.secret.encode(), body, hashlib.sha256).hexdigest()
+        # Gitea's native header is raw hex; its GitHub compatibility header
+        # includes 'sha256='. Accept either signed format, never unsigned data.
+        verified = bool(github_sig and hmac.compare_digest("sha256=" + digest, github_sig)) or bool(
+            gitea_sig
+            and (
+                hmac.compare_digest(digest, gitea_sig)
+                or hmac.compare_digest("sha256=" + digest, gitea_sig)
+            )
+        )
+        if not verified:
             self._fail(ip, now)
             return False, "bad signature"
         timestamp = headers.get("X-GitHub-Hookshot") or headers.get("X-Gitea-Timestamp")
