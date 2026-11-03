@@ -69,3 +69,9 @@ The Gitea sandbox was inspected **directly in the logged-in Chrome browser on th
 - On the Mac, `~/Library/Application Support/PA-acceptance-secrets` is **absent** (not a credential inspection); no service-account PAT has been installed in PA. The next PA-native authenticated API E2E remains blocked pending local, user-entered credentials through `scripts/setup-gitea-sandbox-credentials.py`.
 
 This browser inspection complements the earlier authenticated read-only API results. It does **not** prove live denial using the `pa-agent-e2e` API identity, since that identity's token has not been supplied or validated.
+
+## Agent credential live API proof (2026-11-03)
+
+The operator privately entered the `pa-agent-e2e` PAT via the Mac local TTY-only setup helper. The saved token passed the helper's own authenticated identity, sandbox Write, no production Write/Admin, and file-mode checks (credential directory `0700`, `agent.token` `0600`). An authenticated request using that stored identity then **created sandbox Issue #1 comment ID 96**; the Gitea response identified the author as `pa-agent-e2e`. This proves real `issue:write` on the isolated acceptance repository, not merger permission or a complete PA-native PR.
+
+The `pa-merger-e2e` PAT has **not** been installed as of this test. A separate Chrome incognito Gitea login form was prepared with its username; no account password or token was passed through the chat or included in the Git repository.
