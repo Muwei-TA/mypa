@@ -4,12 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pa-automation"
-version = "0.1.0"
-description = "Private AI automation system — M1 foundation"
+version = "0.1.1"
+description = "Private AI automation system"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.14,<2",
+  "apscheduler>=3.11,<4",
   "fastapi>=0.162.0",
   "httpx>=0.28,<1",
   "jinja2>=3.1.6",
@@ -38,14 +39,19 @@ default = true
 codex_cli = "pa.engines.local:CodexCLI"
 hermes_cli = "pa.engines.local:HermesCLI"
 workbuddy_cli = "pa.engines.local:WorkBuddyCLI"
+gui = "pa.engines.gui.engine:GuiEngine"
 [project.entry-points."pa.tools"]
+read_url = "pa.tools.read_url:ReadURL"
 [project.entry-points."pa.scm"]
 [project.entry-points."pa.notifiers"]
 [project.entry-points."pa.secrets"]
 env = "pa.secrets.resolver:EnvProvider"
 keychain = "pa.secrets.keychain:KeychainProvider"
+sops = "pa.secrets.providers:SopsProvider"
+onepassword = "pa.secrets.providers:OnePasswordProvider"
 [project.entry-points."pa.hooks"]
 [project.entry-points."pa.sandbox"]
+process = "pa.sandbox.runtime:ProcessSandbox"
 [project.entry-points."pa.effects"]
 "feishu.send" = "pa.effects.feishu:FeishuHandler"
 
@@ -71,3 +77,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's Depends(...) in defaults is the documented pattern.
+"src/pa/api/*" = ["B008"]

@@ -12,6 +12,7 @@ from pa.config.loader import load
 from pa.effects.runner import EffectRunner
 from pa.engines.process import ENV_ALLOW
 from pa.hub.pause import set_value
+from pa.ingress.scheduler import ScheduleService
 from pa.notify.dispatch import flush_due
 from pa.plugins import discover
 from pa.procs.worker import Worker
@@ -49,6 +50,7 @@ async def serve(config_dir, *, once=False, engine_id=None):
     lock_owner = new_id()
     child = None
     log_file = None
+    schedules = None
 
     def lock_value():
         return json.dumps(
@@ -108,6 +110,9 @@ async def serve(config_dir, *, once=False, engine_id=None):
     pulse_task.add_done_callback(pulse_failed)
     try:
         cfg = load(config_dir)
+        if not once:
+            schedules = ScheduleService(facade, config_dir)
+            schedules.start()
         if not once and cfg.sources.sources.feishu.enabled:
             logs = cfg.main.data_path(config_dir) / "logs"
             logs.mkdir(parents=True, exist_ok=True)
@@ -128,6 +133,8 @@ async def serve(config_dir, *, once=False, engine_id=None):
             return await Worker(facade, config_dir).once(engine_id)
 
         async def receiver_check():
+            if schedules:
+                schedules.sync()
             if child and child.returncode is not None:
                 raise PAError(f"Feishu receiver exited; inspect {logs / 'feishu.log'}")
 
@@ -156,6 +163,8 @@ async def serve(config_dir, *, once=False, engine_id=None):
             signal.signal(signal.SIGTERM, previous_sigterm)
         pulse_task.cancel()
         await asyncio.gather(pulse_task, return_exceptions=True)
+        if schedules:
+            schedules.shutdown()
         if child and child.returncode is None:
             child.terminate()
             try:

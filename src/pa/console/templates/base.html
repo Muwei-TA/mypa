@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>PA 控制台</title>
+  <link rel="stylesheet" href="/console/static/console.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="/console/">总览</a>
+    <a href="/console/queue-page">队列</a>
+    <a href="/console/decisions-page">决定</a>
+    <a href="/console/engines-page">引擎</a>
+    <a href="/console/observations-page">观察</a>
+    <a href="/console/cost-page">成本</a>
+    <a href="/console/config-page">配置</a>
+    <a href="/console/audit-page">审计</a>
+    <form class="searchbox" action="/console/search-page" method="get">
+      <input type="search" name="q" placeholder="搜索文本 / ID / #12 / URL" value="{{ results.query if results is defined else '' }}">
+      <button type="submit">搜索</button>
+    </form>
+  </nav>
+  <main>
+  {% block content %}{% endblock %}
+  </main>
+  <script src="/console/static/console.js" defer></script>
+</body>
+</html>

@@ -141,7 +141,7 @@ def test_retry_exhaustion_notifies_owner(configured, config_dir):
             return {"installed": True}
 
         async def run(self, request):
-            return EngineResult(engine_id="fake", error="offline", error_kind="transient")
+            return EngineResult(engine_id="fake", error="offline", error_kind="transient", turns=1)
 
     worker = Worker(configured, config_dir, engines={"fake": Engine()}, sleeper=no_sleep)
     for _ in range(3):

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>登录 PA 控制台</h1>
+<form id="login-form" method="post" action="/console/login">
+  <label>密码 <input type="password" name="password" required></label>
+  <label>TOTP 验证码 <input type="text" name="totp" inputmode="numeric" pattern="[0-9]{6}" required></label>
+  <button type="submit">登录</button>
+  <p class="error" id="login-error" hidden>凭据无效，请重试。</p>
+</form>
+<script>
+  document.getElementById("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const body = {password: form.password.value, totp: form.totp.value};
+    const response = await fetch("/console/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (response.ok) {
+      location.href = "/console/";
+    } else {
+      document.getElementById("login-error").hidden = false;
+    }
+  });
+</script>
+{% endblock %}

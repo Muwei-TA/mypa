@@ -10,6 +10,9 @@ class EngineRequest(Model):
     task_id: str
     prompt: str
     output_dir: Path
+    max_turns: int | None = Field(default=None, ge=1)
+    workspace: Path | None = None
+    git_dir: Path | None = None
 
 
 class EngineResult(Model):
@@ -19,3 +22,5 @@ class EngineResult(Model):
     error: str | None = None
     error_kind: str | None = None
     log_path: str | None = None
+    # Adapter-reported model/API iterations, never taken from the model receipt.
+    turns: int | None = Field(default=None, ge=0)

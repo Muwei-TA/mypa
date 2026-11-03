@@ -3,7 +3,7 @@ import json
 from sqlalchemy import text
 
 from pa.common import now
-from pa.notify.dispatch import record_feishu_failure, record_feishu_success
+from pa.notify.dispatch import backfill_recovered, record_feishu_failure, record_feishu_success
 from pa.notify.feishu import FeishuClient
 from pa.store.db import transaction
 
@@ -37,6 +37,7 @@ class FeishuHandler:
             raise
         with transaction(self.engine) as c:
             record_feishu_success(c)
+            backfill_recovered(c, executed=[effect["id"]])
             c.execute(
                 text("""
                 INSERT INTO system_state(key,value,updated_at) VALUES(:key,:value,:at)

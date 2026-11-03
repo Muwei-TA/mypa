@@ -1,21 +1,31 @@
-"""FastAPI application and M1-18 basic REST endpoints.
+"""FastAPI application and REST endpoints (M1-18 + M3-02).
 
 All owner endpoints require a configured Bearer token, including on loopback.
-Only /healthz is public. The full resource surface lands in M3-02.
+Only /healthz (and the configured webhook endpoints) are public. Agent
+tokens (`agent_token=`) map to AgentFacade: reads and task submissions only;
+config writes and destructive actions are absent from their surface.
 """
 
+import json
 import secrets
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import Field
 from sqlalchemy import text
 
-from pa.common import PAError
+from pa.common import PAError, now
 from pa.config.schema import Model
+from pa.console.search import search as global_search
+from pa.console.testing import dry_run_rules as test_event
+from pa.console.testing import dry_run_skill as test_skill
+from pa.ingress.github import GiteaWebhookAdapter, GitHubWebhookAdapter
 from pa.ingress.manual import ManualAdapter
+from pa.ingress.webhook_common import WebhookGuard
+from pa.store.db import transaction
 from pa.store.models import TaskStatus
+from pa.store.roles import AgentFacade
 
 
 class ManualEventInput(Model):
@@ -23,6 +33,46 @@ class ManualEventInput(Model):
     summary: str | None = Field(default=None, max_length=80)
     payload: dict = Field(default_factory=dict)
     subject: str | None = None
+
+
+class TaskPatch(Model):
+    priority: str
+
+
+class DecisionAnswer(Model):
+    option: str
+
+
+class ConfigWrite(Model):
+    value: dict
+    base_revision: int = Field(ge=0)
+
+
+class ReorderInput(Model):
+    order: list[str]
+
+
+class RuleTestInput(Model):
+    event: dict = Field(default_factory=dict)
+
+
+class SkillTestInput(Model):
+    input: dict = Field(default_factory=dict)
+
+
+class BudgetInput(Model):
+    id: str = Field(min_length=1, max_length=64)
+    scope: str = Field(pattern="^(global|skill|engine|task)$")
+    scope_id: str | None = None
+    period: str = Field(default="day", pattern="^(day|month)$")
+    limit_cny: float | None = Field(default=None, ge=0)
+    soft_pct: int = Field(default=80, ge=1, le=100)
+
+
+class MemoryInput(Model):
+    kind: str = Field(default="fact", pattern="^(fact|lesson|context|profile)$")
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=4000)
 
 
 _STATUS_CODE = {
@@ -33,13 +83,22 @@ _STATUS_CODE = {
 }
 
 
-def create_app(facade, *, api_token: str | None = None) -> FastAPI:
+def create_app(
+    facade,
+    *,
+    api_token: str | None = None,
+    agent_token: str | None = None,
+    webhook_secrets: dict[str, str] | None = None,
+    login_service=None,
+) -> FastAPI:
     app = FastAPI(
-        title="PA Automation", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None
+        title="PA Automation", version="0.1.1", docs_url=None, redoc_url=None, openapi_url=None
     )
     router = APIRouter(prefix="/api/v1")
+    guards = {k: WebhookGuard(secret=v) for k, v in (webhook_secrets or {}).items()}
+    agent_facade = AgentFacade(facade) if agent_token else None
 
-    def require_auth(authorization: str | None = Header(default=None)) -> None:
+    def require_auth(authorization: str | None = Header(default=None)):
         if (
             not api_token
             or not authorization
@@ -50,6 +109,44 @@ def create_app(facade, *, api_token: str | None = None) -> FastAPI:
                 detail="invalid or missing bearer token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    def session_owner(request: Request, *, writing=False):
+        if login_service is None:
+            return None
+        from pa.console.auth import SESSION_COOKIE
+
+        session = login_service.verify_session(request.cookies.get(SESSION_COOKIE))
+        if session is None:
+            return None
+        if writing and not login_service.check_csrf(session, request.headers.get("X-CSRF-Token")):
+            raise HTTPException(status_code=403, detail="csrf check failed")
+        return facade
+
+    def require_agent(request: Request, authorization: str | None = Header(default=None)):
+        """Agent tokens authenticate as agent-role; owner tokens pass too."""
+        if not authorization and (f := session_owner(request, writing=request.method != "GET")):
+            return f
+        if (
+            agent_token
+            and authorization
+            and secrets.compare_digest(authorization.encode(), f"Bearer {agent_token}".encode())
+        ):
+            return agent_facade
+        require_auth(authorization)
+        return facade
+
+    def require_owner(request: Request, authorization: str | None = Header(default=None)):
+        """Owner-only surface: agent tokens are structurally rejected."""
+        if not authorization and (f := session_owner(request, writing=request.method != "GET")):
+            return f
+        if (
+            agent_token
+            and authorization
+            and secrets.compare_digest(authorization.encode(), f"Bearer {agent_token}".encode())
+        ):
+            raise HTTPException(status_code=403, detail="agent tokens cannot call this")
+        require_auth(authorization)
+        return facade
 
     @app.exception_handler(RequestValidationError)
     def invalid_request(request, exc):
@@ -77,9 +174,81 @@ def create_app(facade, *, api_token: str | None = None) -> FastAPI:
     def healthz():
         return {"status": "ok"}
 
+    async def _receive_webhook(kind: str, request: Request) -> JSONResponse | dict:
+        guard = guards.get(kind)
+        if guard is None:
+            raise HTTPException(status_code=404, detail="webhook not configured")
+        body = await request.body()
+        headers = {
+            "X-Hub-Signature-256": request.headers.get("X-Hub-Signature-256", ""),
+            "X-Gitea-Signature": request.headers.get("X-Gitea-Signature", ""),
+            "X-GitHub-Hookshot": request.headers.get("X-GitHub-Hookshot", ""),
+            "X-Gitea-Timestamp": request.headers.get("X-Gitea-Timestamp", ""),
+        }
+        ip = request.client.host if request.client else "unknown"
+        ok, reason = guard.check(ip=ip, headers=headers, body=body)
+        if not ok:
+            status = 401 if reason == "bad signature" else 403
+            return JSONResponse(
+                status_code=status,
+                content={"error": {"code": "webhook_rejected", "message": reason}},
+            )
+        delivery = request.headers.get("X-GitHub-Delivery") or request.headers.get(
+            "X-Gitea-Delivery"
+        )
+        if delivery:
+            with facade.engine.connect() as connection:
+                seen = connection.execute(
+                    text("SELECT 1 FROM events WHERE dedup_key=:k"),
+                    {"k": f"webhook-delivery:{kind}:{delivery}"},
+                ).first()
+            if seen:
+                return {"status": "duplicate", "delivery": delivery}
+        payload = json.loads(body)
+        payload["_event"] = request.headers.get("X-GitHub-Event") or request.headers.get(
+            "X-Gitea-Event", ""
+        )
+        adapter = GitHubWebhookAdapter() if kind == "github" else GiteaWebhookAdapter()
+        event = adapter.parse(payload)
+        result = facade.emit(event)
+        if delivery:
+            with facade.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO events(id,source,type,category,actor,subject,"
+                        "payload_json,dedup_key,received_at,trust,status,summary,link,"
+                        "addressed) VALUES(:id,:source,:type,:category,NULL,NULL,"
+                        ":payload,:dedup,:received,'verified','accepted',:summary,NULL,0) "
+                        "ON CONFLICT(source,dedup_key) DO NOTHING"
+                    ),
+                    {
+                        "id": f"delivery-{delivery}",
+                        "source": kind,
+                        "type": "webhook.delivery",
+                        "category": "new_source",
+                        "payload": json.dumps({"delivery": delivery}),
+                        "dedup": f"webhook-delivery:{kind}:{delivery}",
+                        "received": now(),
+                        "summary": f"delivery {delivery}"[:80],
+                    },
+                )
+        return result
+
+    if "github" in guards:
+
+        @app.post("/hooks/github")
+        async def hook_github(request: Request):
+            return await _receive_webhook("github", request)
+
+    if "gitea" in guards:
+
+        @app.post("/hooks/gitea")
+        async def hook_gitea(request: Request):
+            return await _receive_webhook("gitea", request)
+
     @router.get("/health")
-    def health(_: None = Depends(require_auth)):
-        with facade.engine.connect() as connection:
+    def health(f=Depends(require_agent)):
+        with f.engine.connect() as connection:
             connection.execute(text("SELECT 1"))
         return {
             "checks": [{"name": "db", "ok": True}],
@@ -90,13 +259,13 @@ def create_app(facade, *, api_token: str | None = None) -> FastAPI:
     def create_event(
         body: ManualEventInput,
         idempotency_key: str | None = Header(default=None),
-        _: None = Depends(require_auth),
+        f=Depends(require_agent),
     ):
         request = body.model_dump(exclude_none=True)
         if idempotency_key:
             request["dedup_key"] = idempotency_key
         event = ManualAdapter().parse(request)
-        return facade.emit(event)
+        return f.emit(event)
 
     @router.get("/tasks")
     def list_tasks(
@@ -104,23 +273,350 @@ def create_app(facade, *, api_token: str | None = None) -> FastAPI:
         skill: str | None = None,
         limit: int = Query(default=50, ge=1, le=500),
         cursor: str | None = None,
-        _: None = Depends(require_auth),
+        f=Depends(require_agent),
     ):
-        return facade.list_tasks(
+        return f.list_tasks(
             status=status.value if status else None, skill=skill, limit=limit, cursor=cursor
         )
 
     @router.get("/system/state")
-    def system_state(_: None = Depends(require_auth)):
-        return facade.status()
+    def system_state(f=Depends(require_agent)):
+        return f.status()
 
     @router.post("/system:pause")
-    def system_pause(_: None = Depends(require_auth)):
+    def system_pause(_: object = Depends(require_owner)):
         return facade.pause()
 
     @router.post("/system:resume")
-    def system_resume(_: None = Depends(require_auth)):
+    def system_resume(_: object = Depends(require_owner)):
         return facade.resume()
 
+    # --- M3-02 resource surface ------------------------------------------
+
+    @router.get("/tasks/{task_id}")
+    def task_detail(task_id: str, f=Depends(require_agent)):
+        result = f.show("tasks", task_id)
+        with f.engine.connect() as connection:
+            result["runs"] = [
+                dict(row)
+                for row in connection.execute(
+                    text("SELECT * FROM runs WHERE task_id=:id ORDER BY rowid"), {"id": task_id}
+                ).mappings()
+            ]
+            result["decisions"] = [
+                dict(row)
+                for row in connection.execute(
+                    text("SELECT * FROM decisions WHERE task_id=:id ORDER BY rowid"),
+                    {"id": task_id},
+                ).mappings()
+            ]
+            result["pull_requests"] = [
+                dict(row)
+                for row in connection.execute(
+                    text("SELECT * FROM pull_requests WHERE task_id=:id"), {"id": task_id}
+                ).mappings()
+            ]
+        return result
+
+    @router.post("/tasks/{task_id}:cancel")
+    def task_cancel(task_id: str, f=Depends(require_owner)):
+        return f.cancel(task_id)
+
+    @router.post("/tasks/{task_id}:pin")
+    def task_pin(task_id: str, f=Depends(require_owner)):
+        return f.set_pinned(task_id, True)
+
+    @router.post("/tasks/{task_id}:unpin")
+    def task_unpin(task_id: str, f=Depends(require_owner)):
+        return f.set_pinned(task_id, False)
+
+    @router.patch("/tasks/{task_id}")
+    def task_patch(task_id: str, body: TaskPatch, f=Depends(require_agent)):
+        return f.set_priority(task_id, body.priority)
+
+    @router.get("/queue")
+    def queue(f=Depends(require_agent)):
+        return f.list_tasks(limit=200)
+
+    @router.get("/decisions")
+    def decisions(status: str | None = None, f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            query = "SELECT * FROM decisions"
+            params: dict = {}
+            if status:
+                query += " WHERE status=:status"
+                params["status"] = status
+            query += " ORDER BY rowid DESC LIMIT 200"
+            return {"items": [dict(r) for r in connection.execute(text(query), params).mappings()]}
+
+    @router.post("/decisions/{decision_id}:answer")
+    def decision_answer(decision_id: str, body: DecisionAnswer, f=Depends(require_owner)):
+        from pa.hub.decisions import submit
+
+        with transaction(f.engine) as connection:
+            return submit(connection, decision_id, body.option)
+
+    @router.get("/precedents")
+    def precedents(kind: str | None = None, f=Depends(require_agent)):
+        from pa.judge.precedents import list_precedents
+
+        with f.engine.connect() as connection:
+            items = [
+                {
+                    "id": p.id,
+                    "kind": p.kind,
+                    "title": p.title,
+                    "content": p.content,
+                    "scope": p.scope,
+                    "expires_at": p.expires_at,
+                }
+                for p in list_precedents(connection, kind=kind)
+            ]
+            return {"items": items}
+
+    @router.post("/precedents")
+    def precedent_add(body: dict, _: None = Depends(require_owner)):
+        from pa.judge.precedents import add_precedent
+
+        required = {"kind", "title", "content"}
+        missing = required - set(body)
+        if missing:
+            raise HTTPException(status_code=422, detail=f"missing fields: {sorted(missing)}")
+        with facade.engine.begin() as connection:
+            pid = add_precedent(
+                connection,
+                kind=body["kind"],
+                title=body["title"],
+                content=body["content"],
+                scope=body.get("scope", "global"),
+                quote=body.get("quote", ""),
+            )
+            connection.execute(
+                text("""
+                INSERT INTO audit_log(id,actor,action,at) VALUES(:id,'owner',:action,:at)
+            """),
+                {"id": f"audit-{pid}", "action": "precedent.add", "at": now()},
+            )
+        return {"id": pid}
+
+    @router.get("/config/{file_name}")
+    def config_read(file_name: str, f=Depends(require_agent)):
+        import yaml
+
+        target = f.config_dir / file_name
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="config file not found")
+        return {"file": file_name, "value": yaml.safe_load(target.read_text())}
+
+    @router.put("/config/{file_name}")
+    def config_write(file_name: str, body: ConfigWrite, f=Depends(require_owner)):
+        from pa.config.versions import ConfigConflict, save_versioned
+
+        try:
+            with transaction(f.engine) as connection:
+                result = save_versioned(
+                    connection,
+                    f.config_dir,
+                    file_name=file_name,
+                    value=body.value,
+                    base_revision=body.base_revision,
+                    origin="console",
+                    actor="owner",
+                )
+        except ConfigConflict as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": {
+                        "code": "config_conflict",
+                        "message": str(exc),
+                        "expected_revision": exc.expected_revision,
+                    }
+                },
+            )
+        return result
+
+    @router.get("/config/{file_name}/versions")
+    def config_versions(file_name: str, f=Depends(require_agent)):
+        from pa.config.versions import versions_of
+
+        with f.engine.connect() as connection:
+            return {"items": versions_of(connection, file_name)}
+
+    @router.get("/effects")
+    def effects(status: str | None = None, f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            query = "SELECT * FROM effects"
+            params: dict = {}
+            if status:
+                query += " WHERE status=:status"
+                params["status"] = status
+            query += " ORDER BY rowid DESC LIMIT 200"
+            return {"items": [dict(r) for r in connection.execute(text(query), params).mappings()]}
+
+    @router.post("/effects/{effect_id}:retry")
+    def effect_retry(effect_id: str, f=Depends(require_owner)):
+        return f.effect_retry(effect_id)
+
+    @router.post("/effects/{effect_id}:drop")
+    def effect_drop(effect_id: str, f=Depends(require_owner)):
+        return f.effect_drop(effect_id)
+
+    @router.get("/observations")
+    def observations(rule: str | None = None, f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            query = "SELECT * FROM observations"
+            params: dict = {}
+            if rule:
+                query += " WHERE rule_id=:rule"
+                params["rule"] = rule
+            query += " ORDER BY rowid DESC LIMIT 200"
+            return {"items": [dict(r) for r in connection.execute(text(query), params).mappings()]}
+
+    # --- M3-08/10/11: reorder, search, rule & skill tests -----------------
+
+    @router.post("/skills:reorder")
+    def skills_reorder(body: ReorderInput, f=Depends(require_owner)):
+        return f.reorder_skills(body.order)
+
+    @router.post("/rules:reorder")
+    def rules_reorder(body: ReorderInput, f=Depends(require_owner)):
+        return f.reorder_rules(body.order)
+
+    @router.post("/rules:test")
+    def rules_test(body: RuleTestInput, f=Depends(require_agent)):
+        return test_event(f.config_dir, body.event)
+
+    @router.post("/skills/{skill_id}:test")
+    def skill_test(skill_id: str, body: SkillTestInput, f=Depends(require_agent)):
+        return test_skill(f.config_dir, skill_id, body.input)
+
+    @router.get("/search")
+    def search_all(q: str = Query(min_length=1), f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            return global_search(connection, q)
+
+    # --- M5: breaker reset, cost summary, budgets, memories ---------------
+
+    @router.post("/engines/{engine_id}:reset-breaker")
+    def engine_reset_breaker(engine_id: str, f=Depends(require_owner)):
+        from pa.obs.breaker import reset as breaker_reset
+
+        with f.engine.begin() as connection:
+            return breaker_reset(connection, engine_id)
+
+    @router.get("/cost/summary")
+    def cost_summary(
+        group_by: str = Query(pattern="^(skill|engine|day)$"),
+        from_: str | None = Query(default=None, alias="from"),
+        to: str | None = None,
+        f=Depends(require_agent),
+    ):
+        column = {"skill": "skill_id", "engine": "engine_id", "day": "date(at)"}[group_by]
+        query = (
+            f"SELECT {column} AS bucket, COUNT(*) AS calls, SUM(cost_cny) AS total_cny "
+            "FROM cost_ledger WHERE est=0"
+        )
+        params: dict = {}
+        if from_:
+            query += " AND at >= :from_"
+            params["from_"] = from_
+        if to:
+            query += " AND at <= :to"
+            params["to"] = to
+        query += f" GROUP BY {column} ORDER BY total_cny DESC LIMIT 200"
+        with f.engine.connect() as connection:
+            rows = connection.execute(text(query), params).mappings()
+            return {"group_by": group_by, "items": [dict(r) for r in rows]}
+
+    @router.get("/budgets")
+    def budgets_list(f=Depends(require_agent)):
+        with f.engine.connect() as connection:
+            rows = connection.execute(text("SELECT * FROM budgets ORDER BY rowid")).mappings()
+            return {"items": [dict(r) for r in rows]}
+
+    @router.put("/budgets")
+    def budgets_put(body: BudgetInput, f=Depends(require_owner)):
+        with f.engine.begin() as connection:
+            connection.execute(
+                text("""
+                INSERT INTO budgets(id,scope,scope_id,period,limit_cny,soft_pct)
+                VALUES(:id,:scope,:scope_id,:period,:limit,:soft)
+                  ON CONFLICT(id) DO UPDATE SET scope=:scope,scope_id=:scope_id,
+                    period=:period,limit_cny=:limit,soft_pct=:soft
+            """),
+                {
+                    "id": body.id,
+                    "scope": body.scope,
+                    "scope_id": body.scope_id,
+                    "period": body.period,
+                    "limit": body.limit_cny,
+                    "soft": body.soft_pct,
+                },
+            )
+            row = (
+                connection.execute(text("SELECT * FROM budgets WHERE id=:id"), {"id": body.id})
+                .mappings()
+                .first()
+            )
+            return dict(row)
+
+    @router.get("/memories")
+    def memories_list(q: str | None = None, f=Depends(require_agent)):
+        from pa.memory.store import retrieve
+
+        with f.engine.connect() as connection:
+            if q:
+                return {"items": retrieve(connection, q)}
+            rows = connection.execute(
+                text("SELECT * FROM memories ORDER BY rowid DESC LIMIT 100")
+            ).mappings()
+            return {"items": [dict(r) for r in rows]}
+
+    @router.post("/memories")
+    def memories_post(body: MemoryInput, f=Depends(require_owner)):
+        from pa.memory.store import add_memory
+
+        with f.engine.begin() as connection:
+            memory_id = add_memory(
+                connection,
+                kind=body.kind,
+                title=body.title,
+                content=body.content,
+            )
+            row = (
+                connection.execute(text("SELECT * FROM memories WHERE id=:id"), {"id": memory_id})
+                .mappings()
+                .first()
+            )
+            return dict(row)
+
+    @router.delete("/memories/{memory_id}")
+    def memories_delete(memory_id: str, f=Depends(require_owner)):
+        with f.engine.begin() as connection:
+            result = connection.execute(
+                text("DELETE FROM memories WHERE id=:id"), {"id": memory_id}
+            )
+            if result.rowcount == 0:
+                raise HTTPException(status_code=404, detail="memory not found")
+            return {"deleted": memory_id}
+
     app.include_router(router)
+    if login_service is not None:
+        from pathlib import Path as _Path
+
+        from fastapi.staticfiles import StaticFiles
+
+        from pa.console.pages import build_pages_router
+        from pa.console.routes import build_console_router
+
+        static_dir = _Path(__file__).resolve().parent.parent / "console" / "static"
+        if static_dir.exists():
+            app.mount(
+                "/console/static",
+                StaticFiles(directory=str(static_dir)),
+                name="console-static",
+            )
+        app.include_router(build_pages_router(login_service, facade))
+        app.include_router(build_console_router(login_service, facade))
     return app

@@ -4,29 +4,38 @@
 
 ## 开发状态
 
-当前为 M1 开发版，已打通文本任务执行链路：事件接入（手动/飞书）→
-规则路由与同主题合并 → 派单（槽位、租约、过期恢复）→ 本地 CLI 引擎执行与
-心跳续租 → 回执研判与人工门禁 → 自动结案或转人工决定 → 分级通知。
+当前版本 **0.1.1**。已修复后续提交审阅中的 17 组问题，并在 Apple Silicon Mac 上
+验证真实 CLI 模型执行、代码工作区修改、HTTP 控制台和浏览器交互。修复与真机证据见
+[修复记录](docs/reviews/2026-11-03-repairs.md)。不以模块存在或单元测试通过替代整阶段验收。
 
-已具备的关键能力：
+当前可用的运行路径：
 
-- 本机引擎发现；Codex 与 Hermes 已实调用通过；WorkBuddy 适配器等待 CLI 登录；
-- Codex 使用 read-only 模式，WorkBuddy 禁用工具，Hermes 仅开放 clarify；尚未提供容器隔离；
-- 事务性发件箱、发件箱 runner（退避/重试/幂等）与飞书发送 handler；
-- 飞书长连接接收进程与配对；判断层自动重试、故障转移与重派；
-- 通知 P0–P3 分级、P2 十分钟合并窗口、飞书连续不可用 15 分钟后的 macOS
-  `osascript` 本地兜底与待补发标记；
-- 任务/技能排序值维护（置顶、优先级、移动、重编号）；
-- Skill 包内资产与加载器：`sample-direct` 的 `skill.yaml`/`prompt.md`（Jinja2）
-  经 Pydantic 校验并驱动提示词组装，完成文本摘要与结案；URL 当前仅作为文本输入；
-- REST 基础接口（FastAPI + Uvicorn，绑定 127.0.0.1）：`/healthz`、`/api/v1/health`、
-  `POST /events`（支持 `Idempotency-Key`）、`GET /tasks`、`/system:pause|resume|state`，
-  私有接口强制 Bearer 校验；经 `python -m pa.procs.server <config-dir>` 启动，
-  启动前需通过 `pa secret set secret://keychain/pa/api_owner_token` 配置 owner 令牌。
+- 手动/飞书/定时事件 → 规则与准入 → 槽位、租约及恢复 → CLI 执行 → 回执研判、
+  人工决定与分级通知；文本输入和许可域名 URL 读取有独立验证。
+- [代码模式](docs/code-mode.md)：仅接收 code.yaml 许可的仓库，创建持久任务工作区，
+  Codex 在受限权限配置下编辑文件，由 PA 提交及生成补丁。local 仓库停在人工审阅；
+  配置平台适配器后才创建 PR 并等待指定检查，完整远端审查/合并/发布仍待联调。
+- 控制台：密码 + TOTP、签名 Cookie、CSRF、任务与决定操作、跨文件配置版本、
+  冲突检测和中断恢复；规则禁用在下一条接入事件前生效。
+- 金额预算已接入派单及每次原生调用，支持保守预留和实际计价；未配置单价时仍可
+  计量，但存在有限金额预算的调用会拒绝无法估价的请求。token/轮数/时间限制独立。
+- Mac 内核沙盒实际拒绝工作区写入、宿主文件读取和网络连接；这是文件与网络隔离，
+  不是 VM/容器，不提供 CPU/RAM 硬配额。process 后端只用于开发，拒绝严格审查；
+  Docker/Apple Container/Tart 未实现，显式选择时拒绝降级。
+- [暂停与恢复](docs/pause-recovery.md)、[持久化定时事件](docs/schedules.md)、
+  [许可域名读取](docs/source-reader.md)、[执行额度](docs/execution-limits.md) 保留各自边界。
 
-**尚未实施**：真实 URL 抓取、定时调度、豆包 GUI 执行、完整 REST 与角色权限面（M3）、
-代码平台闭环（M2）及容器隔离。不能视为完整 M1 已验收。
-分项进度和 [评审记录](docs/reviews/2026-11-02-m1.md) 中列出了验证边界。
+**未验收或未接通**：PA 的原生 GUI 驱动、完整远端 PR/发布验证、真正容器运行、
+向量检索、模型研判/订阅/策略变更等模块与主循环的全面接线、整机恢复、WebDAV 上传。
+GUI 的 SyntheticDriver 仅限显式注入的测试；生产健康检查不再用它报告“可执行”，
+CLI dry-run 在没有真实驱动时报告不可用。原有 M1–M5 分项记录见
+[开发进度表](docs/PROGRESS.md)，其中历史“完成”标记不能当作当前验收结论。
+
+累计 token 依据引擎已报告用量检查，在调用结束后及下一次调用前生效；尚不支持
+流式 token 硬截断，也无法还原被强杀或未报告的 token。执行时间累计已记账的引擎
+调用和输入准备（包括 URL 读取）时长，不包含排队与重试退避；轮数额度持久预留，
+Hermes/WorkBuddy 接收剩余限制，Codex 单次内部迭代限制仍待核实，详见
+[执行额度边界](docs/execution-limits.md)。这些限制不依赖金额预算。
 
 ## 本地开发
 
@@ -70,5 +79,5 @@ uv build
 未实现的配置文件会明确报错，不会默默忽略。
 
 九类插件扩展点通过 `pa plugin list --json` 查看。已注册 manual/cron 事件转换器、
-codex/hermes/workbuddy 三个引擎、env/keychain 密钥后端与 feishu.send effect handler，
-其余扩展点留空。
+codex/hermes/workbuddy/gui 四个引擎、read_url 工具、env/keychain/sops/onepassword
+密钥后端、process 沙盒后端与 feishu.send effect handler，其余扩展点留空。

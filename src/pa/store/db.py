@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 from alembic import command
 from pa.common import PAError
 
-SCHEMA_HEAD = "0002_effect_leases"
+SCHEMA_HEAD = "0008_review_repairs"
 
 
 def make_engine(path: str | Path) -> Engine:
@@ -51,12 +51,21 @@ def transaction(engine: Engine):
     """Take the SQLite writer lock before reads used to decide writes."""
     with engine.connect().execution_options(pa_writer=True) as connection:
         connection.begin()
+        connection.info["pa_rollback_actions"] = []
+        connection.info["pa_commit_actions"] = []
         try:
             yield connection
             connection.commit()
         except BaseException:
+            for action in reversed(connection.info.pop("pa_rollback_actions", [])):
+                action()
+            connection.info.pop("pa_commit_actions", None)
             connection.rollback()
             raise
+        else:
+            connection.info.pop("pa_rollback_actions", None)
+            for action in connection.info.pop("pa_commit_actions", []):
+                action()
 
 
 def migrate(engine: Engine) -> None:

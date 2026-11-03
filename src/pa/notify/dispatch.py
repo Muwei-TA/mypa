@@ -123,3 +123,48 @@ async def record_feishu_failure(connection, *, effect, notifier=None):
     # Restart the window so a persistent outage notifies at most once per 15 min.
     _set_state(connection, FAILURE_KEY, now())
     return {"local_fallback": True, "effect_id": effect["id"]}
+
+
+def backfill_recovered(connection, *, executed=()):
+    """Requeue effects deferred during a Feishu outage once delivery works again.
+
+    Called from the same transaction that recorded a successful Feishu send.
+    Effects left in `failed` by the 8-attempt cap or the delivery_unknown guard
+    need an explicit owner retry; this only requeues retryable failed sends.
+    """
+    pending = backfill_pending(connection)
+    if not pending:
+        return {"requeued": 0, "remaining": 0}
+    done_ids = set(executed)
+    requeued, remaining = [], []
+    for item in pending:
+        effect_id = item["effect_id"]
+        if effect_id in done_ids:
+            continue
+        row = connection.execute(
+            text("""
+            SELECT status FROM effects WHERE id=:id
+        """),
+            {"id": effect_id},
+        ).scalar_one_or_none()
+        if row == "pending":
+            remaining.append(item)
+        elif row == "running":
+            remaining.append(item)
+        elif row == "failed":
+            connection.execute(
+                text("""
+                UPDATE effects SET status='pending',attempts=0,next_at=NULL,
+                  last_error=NULL WHERE id=:id
+            """),
+                {"id": effect_id},
+            )
+            requeued.append(effect_id)
+        else:
+            # done or dropped: nothing to backfill; drop the marker entry only.
+            pass
+    if remaining:
+        _set_state(connection, BACKFILL_KEY, json.dumps(remaining, ensure_ascii=False))
+    else:
+        connection.execute(text("DELETE FROM system_state WHERE key=:key"), {"key": BACKFILL_KEY})
+    return {"requeued": len(requeued), "remaining": len(remaining), "ids": requeued}

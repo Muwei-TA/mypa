@@ -8,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 
 from pa.common import PAError, new_id, now
 from pa.config.loader import load
+from pa.config.setup import save_files
 from pa.hub import pause as pa_pause
 from pa.hub.pipeline import ingest
 from pa.hub.ranking import fill_missing, plan_move, reindex
@@ -36,7 +37,12 @@ class OwnerFacade:
     """Local owner CLI only. API/agent/executor authentication is a later increment."""
 
     def __init__(self, config_dir: Path):
+        from pa.config.versions import recover_pending
+
+        recover_pending(config_dir)
+        self.config_dir = config_dir
         self.config = load(config_dir)
+        self._config_signature = self._signature()
         self.engine = make_engine(self.config.main.data_path(config_dir) / "pa.sqlite3")
 
     def close(self):
@@ -64,7 +70,24 @@ class OwnerFacade:
 
     def emit(self, event: Event):
         with self.writing("event.emit") as connection:
+            signature = self._signature()
+            if signature != self._config_signature:
+                refreshed = load(self.config_dir)
+                if refreshed.main.data_path(self.config_dir) != self.config.main.data_path(
+                    self.config_dir
+                ):
+                    raise PAError("data_dir changes require a stopped runtime", "conflict")
+                self.config = refreshed
+                self._config_signature = signature
             return ingest(connection, event, self.config)
+
+    def _signature(self):
+        import hashlib
+
+        return tuple(
+            (p.name, hashlib.sha256(p.read_bytes()).digest())
+            for p in sorted(self.config_dir.glob("*.yaml"))
+        )
 
     def list(self, table: str, limit: int = 50):
         if table not in READABLE:
@@ -242,3 +265,89 @@ class OwnerFacade:
                     {"skill": skill_id, "rank": rank},
                 )
             return {"skill_rank": ranks}
+
+    def effect_retry(self, effect_id: str):
+        """Requeue one outbox entry for delivery. Owner judgement covers the
+        delivery_unknown guard: retrying acknowledges the risk of a duplicate
+        send after Feishu's one-hour uuid dedup window."""
+        with self.writing("effect.retry") as connection:
+            row = (
+                connection.execute(
+                    text("SELECT status, attempts FROM effects WHERE id=:id"),
+                    {"id": effect_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise PAError("effect not found", "not_found", 4)
+            if row["status"] in ("done", "dropped"):
+                raise PAError(f"effect is already {row['status']}", "conflict")
+            connection.execute(
+                text("""
+                UPDATE effects SET status='pending',next_at=NULL,lease_owner=NULL,
+                  lease_until=NULL,last_error=NULL WHERE id=:id
+            """),
+                {"id": effect_id},
+            )
+            return {"effect_id": effect_id, "status": "pending", "attempts": row["attempts"]}
+
+    def effect_drop(self, effect_id: str, *, reason: str = "owner_dropped"):
+        with self.writing("effect.drop") as connection:
+            row = (
+                connection.execute(
+                    text("SELECT status FROM effects WHERE id=:id"),
+                    {"id": effect_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise PAError("effect not found", "not_found", 4)
+            if row["status"] in ("done", "dropped"):
+                raise PAError(f"effect is already {row['status']}", "conflict")
+            connection.execute(
+                text("""
+                UPDATE effects SET status='dropped',dropped_reason=:reason,
+                  lease_owner=NULL,lease_until=NULL WHERE id=:id
+            """),
+                {"id": effect_id, "reason": reason},
+            )
+            return {"effect_id": effect_id, "status": "dropped", "reason": reason}
+
+    def set_rule_mode(self, rule_id: str, mode: str):
+        """Persist accept_mode for one rule into rules.yaml (validated + backed up)."""
+        if mode not in ("off", "observe", "auto"):
+            raise PAError("mode must be one of off, observe, auto")
+        # Reload: the in-memory snapshot may lag behind a previous write.
+        rules = load(self.config_dir).rules.model_dump(mode="json", by_alias=True)
+        target = next((r for r in rules["rules"] if r["id"] == rule_id), None)
+        if target is None:
+            raise PAError("rule not found", "not_found", 4)
+        if target["accept_mode"] == mode:
+            return {"rule_id": rule_id, "accept_mode": mode, "changed": False}
+        target["accept_mode"] = mode
+        # Validate and replace rules.yaml first; the audit row records the completed change.
+        save_files(self.config_dir, {"rules.yaml": rules})
+        with self.writing("rule.mode"):
+            pass
+        return {"rule_id": rule_id, "accept_mode": mode, "changed": True}
+
+    def reorder_rules(self, rule_ids: list[str]):
+        """Persist the new rule match order into rules.yaml (M3-08).
+
+        The full id list must be provided exactly once each; the YAML list
+        order is rewritten to match and the change is audited.
+        """
+        rules = load(self.config_dir).rules.model_dump(mode="json", by_alias=True)
+        known = [r["id"] for r in rules["rules"]]
+        if sorted(rule_ids) != sorted(known) or len(set(rule_ids)) != len(rule_ids):
+            raise PAError("provide every known rule id exactly once")
+        if rule_ids == known:
+            return {"rule_order": rule_ids, "changed": False}
+        by_id = {r["id"]: r for r in rules["rules"]}
+        rules["rules"] = [by_id[rid] for rid in rule_ids]
+        save_files(self.config_dir, {"rules.yaml": rules})
+        with self.writing("rule.reorder"):
+            pass
+        return {"rule_order": rule_ids, "changed": True}

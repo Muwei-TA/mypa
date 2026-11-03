@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>决定 <small>飞书不可用时的备用入口</small></h1>
+<table class="waitlist">
+  <thead><tr><th>问题</th><th>推荐</th><th>状态</th><th>过期</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for d in decisions %}
+  <tr data-decision-id="{{ d.id }}">
+    <td>{{ d.question }}</td>
+    <td>{{ d.recommend or "—" }}</td>
+    <td>{{ d.status }}</td>
+    <td>{{ d.expires_at }}</td>
+    <td>
+      {% if d.status == "pending" %}
+      {% for option in d.options %}
+      <button class="btn act-answer" data-id="{{ d.id }}" data-option="{{ option.id }}" data-confirm="确认选择：{{ option.label }}？">{{ option.label }}</button>
+      {% endfor %}
+      {% else %}—{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

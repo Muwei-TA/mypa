@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>观察记录 <small>observe 模式下"本来会做什么"</small></h1>
+<table class="waitlist">
+  <thead><tr><th>时间</th><th>规则</th><th>会接单</th><th>研判</th></tr></thead>
+  <tbody>
+  {% for row in items['items'] %}
+  <tr>
+    <td>{{ row.at }}</td>
+    <td>{{ row.rule_id }}</td>
+    <td>{{ "是" if row.would_accept else "否" }}</td>
+    <td>{{ row.assessment_json or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4">暂无观察记录。</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

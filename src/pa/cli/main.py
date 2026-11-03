@@ -33,6 +33,13 @@ secret_app = typer.Typer(no_args_is_help=True, help="密钥安全输入与只读
 feishu_app = typer.Typer(no_args_is_help=True, help="飞书长连接配置、验证与本人配对")
 service_app = typer.Typer(no_args_is_help=True, help="macOS 后台服务")
 skill_app = typer.Typer(no_args_is_help=True, help="Skill 全局排序")
+rule_app = typer.Typer(no_args_is_help=True, help="规则查询与接单模式")
+archive_app = typer.Typer(no_args_is_help=True, help="快照归档")
+backup_app = typer.Typer(no_args_is_help=True, help="备份快照与恢复")
+cost_app = typer.Typer(no_args_is_help=True, help="成本汇总")
+budget_app = typer.Typer(no_args_is_help=True, help="预算管理")
+memory_app = typer.Typer(no_args_is_help=True, help="记忆库")
+sandbox_app = typer.Typer(no_args_is_help=True, help="一次性沙盒运行")
 for name, group in (
     ("config", config_app),
     ("event", event_app),
@@ -45,6 +52,13 @@ for name, group in (
     ("feishu", feishu_app),
     ("service", service_app),
     ("skill", skill_app),
+    ("rule", rule_app),
+    ("archive", archive_app),
+    ("backup", backup_app),
+    ("cost", cost_app),
+    ("budget", budget_app),
+    ("memory", memory_app),
+    ("sandbox", sandbox_app),
 ):
     app.add_typer(group, name=name)
 
@@ -107,6 +121,23 @@ def main(
 
 def config_path(ctx):
     return ctx.obj["config_dir"]
+
+
+def _load_json_argument(raw: str) -> dict:
+    """Accept @file.json, a bare file path, or inline JSON text."""
+    import json as _json
+
+    text_value = raw
+    if raw.startswith("@"):
+        text_value = Path(raw[1:]).expanduser().read_text()
+    elif not raw.strip().startswith(("{", "[")):
+        candidate = Path(raw).expanduser()
+        if candidate.exists():
+            text_value = candidate.read_text()
+    value = _json.loads(text_value)
+    if not isinstance(value, dict):
+        raise typer.BadParameter("JSON 对象 expected")
+    return value
 
 
 @contextmanager
@@ -308,6 +339,66 @@ def effect_list(ctx: typer.Context, limit: int = 50, json_output: JsonOption = F
         output(facade.list("effects", limit))
 
 
+@effect_app.command("retry")
+@guarded
+def effect_retry(ctx: typer.Context, id: str, json_output: JsonOption = False):
+    """重新排队一个发件箱条目（owner 判断后人工重试）。"""
+    with owner(ctx) as facade:
+        output(facade.effect_retry(id))
+
+
+@effect_app.command("drop")
+@guarded
+def effect_drop(
+    ctx: typer.Context,
+    id: str,
+    reason: Annotated[str, typer.Option(help="丢弃原因")] = "owner_dropped",
+    json_output: JsonOption = False,
+):
+    """丢弃一个发件箱条目；已完成的条目不可丢弃。"""
+    with owner(ctx) as facade:
+        output(facade.effect_drop(id, reason=reason))
+
+
+@rule_app.command("mode")
+@guarded
+def rule_mode(
+    ctx: typer.Context,
+    id: str,
+    mode: Annotated[str, typer.Argument(help="off / observe / auto")],
+    json_output: JsonOption = False,
+):
+    """修改规则接单模式，写回 rules.yaml 并记审计。"""
+    with owner(ctx) as facade:
+        output(facade.set_rule_mode(id, mode))
+
+
+@rule_app.command("test")
+@guarded
+def rule_test(
+    ctx: typer.Context,
+    event: Annotated[str, typer.Argument(help="示例事件 JSON 文件路径（@file），或内联 JSON")],
+    json_output: JsonOption = False,
+):
+    """用示例事件测试规则命中情况，不实际执行。"""
+    from pa.console.testing import dry_run_rules
+
+    payload = _load_json_argument(event)
+    output(dry_run_rules(config_path(ctx), payload))
+
+
+@rule_app.command("reorder")
+@guarded
+def rule_reorder(
+    ctx: typer.Context,
+    rules: Annotated[str, typer.Argument(help="逗号分隔的完整规则顺序，如 r-a,r-b")],
+    json_output: JsonOption = False,
+):
+    """拖拽后的规则排序写回 rules.yaml 并记审计。"""
+    with owner(ctx) as facade:
+        output(facade.reorder_rules([item.strip() for item in rules.split(",") if item.strip()]))
+
+
 @plugin_app.command("list")
 @guarded
 def plugin_list(json_output: JsonOption = False):
@@ -403,6 +494,37 @@ def engine_test(
     result = asyncio.run(get_engine(loaded, id).run(request))
     output(result.model_dump(mode="json"))
     if result.error:
+        raise typer.Exit(2)
+
+
+@engine_app.command("playbook")
+@guarded
+def engine_playbook(
+    ctx: typer.Context,
+    action: Annotated[str, typer.Argument(help="record 或 dry-run")],
+    id: str,
+    json_output: JsonOption = False,
+):
+    """剧本录制占位与试运行：dry-run 只打开不提交任何内容（M4-08）。"""
+    from pa.engines.gui.playbook import PlaybookRun, load_playbook
+
+    if action == "record":
+        output(
+            {
+                "engine_id": id,
+                "recorded": False,
+                "note": "录制需在 Mac mini 图形会话中进行（暂留）",
+            }
+        )
+        return
+    if action != "dry-run":
+        raise typer.BadParameter("action 必须是 record 或 dry-run")
+
+    playbook = load_playbook(config_path(ctx), id)
+    run = PlaybookRun(playbook)
+    result = run.execute(prompt="试运行：不要提交任何内容", dry_run=True)
+    output({"engine_id": id, **{k: v for k, v in result.items() if k != "log"}})
+    if result["status"] != "succeeded":
         raise typer.Exit(2)
 
 
@@ -552,3 +674,290 @@ def skill_reorder(
 ):
     with owner(ctx) as facade:
         output(facade.reorder_skills([item.strip() for item in skills.split(",") if item.strip()]))
+
+
+@skill_app.command("test")
+@guarded
+def skill_test(
+    ctx: typer.Context,
+    id: str,
+    input_path: Annotated[
+        str, typer.Option("--input", help="示例输入 JSON 文件（@file）或内联 JSON")
+    ],
+    json_output: JsonOption = False,
+):
+    """测试 Skill：返回命中的规则与将执行的流程，不实际执行。"""
+    from pa.console.testing import dry_run_skill
+
+    payload = _load_json_argument(input_path)
+    output(dry_run_skill(config_path(ctx), id, payload))
+
+
+# --- M5: breaker / archive / backup / cost / budget / memory / sandbox -----
+
+
+@engine_app.command("breaker")
+@guarded
+def engine_breaker_reset(
+    ctx: typer.Context,
+    id: str,
+    json_output: JsonOption = False,
+):
+    """重置引擎熔断器（owner 判断后人工重置）。"""
+    from pa.obs.breaker import reset as breaker_reset
+
+    with owner(ctx) as facade:
+        with facade.engine.begin() as connection:
+            output(breaker_reset(connection, id))
+
+
+def _data_dir(ctx):
+    with owner(ctx) as facade:
+        loaded = load(config_path(ctx))
+        return facade, loaded.main.data_path(config_path(ctx))
+
+
+@archive_app.command("run")
+@guarded
+def archive_run(
+    ctx: typer.Context,
+    json_output: JsonOption = False,
+):
+    """执行一次快照归档并按 48 份本地保留清理。"""
+    from pa.store.archive import prune_local, snapshot
+
+    _, data_dir = _data_dir(ctx)
+    target = snapshot(data_dir / "pa.sqlite3", data_dir / "snapshots")
+    report = prune_local(data_dir / "snapshots")
+    output({"snapshot": str(target), **report})
+
+
+@archive_app.command("status")
+@guarded
+def archive_status(ctx: typer.Context, json_output: JsonOption = False):
+    """查看本地快照列表与保留状态。"""
+    _, data_dir = _data_dir(ctx)
+    snapshots = sorted((data_dir / "snapshots").glob("pa-*.snapshot.db"))
+    output({"count": len(snapshots), "latest": str(snapshots[-1]) if snapshots else None})
+
+
+@backup_app.command("snapshot")
+@guarded
+def backup_snapshot(ctx: typer.Context, json_output: JsonOption = False):
+    """立即创建一个 VACUUM INTO 快照。"""
+    from pa.store.archive import snapshot as take_snapshot
+
+    _, data_dir = _data_dir(ctx)
+    output({"snapshot": str(take_snapshot(data_dir / "pa.sqlite3", data_dir / "snapshots"))})
+
+
+@backup_app.command("restore")
+@guarded
+def backup_restore(
+    ctx: typer.Context,
+    file: Annotated[str, typer.Argument(help="快照文件路径")],
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    json_output: JsonOption = False,
+):
+    """从快照恢复数据库；--dry-run 只做完整性校验。"""
+    from pa.store.archive import restore as restore_snapshot
+
+    _, data_dir = _data_dir(ctx)
+    output(restore_snapshot(Path(file).expanduser(), data_dir / "pa.sqlite3", dry_run=dry_run))
+
+
+@cost_app.command("summary")
+@guarded
+def cost_summary(
+    ctx: typer.Context,
+    by: Annotated[str, typer.Option("--by", help="skill | engine | day")] = "skill",
+    json_output: JsonOption = False,
+):
+    """成本汇总（实际发生额，不含估算）。"""
+    if by not in ("skill", "engine", "day"):
+        raise typer.BadParameter("--by 必须是 skill、engine 或 day")
+    column = {"skill": "skill_id", "engine": "engine_id", "day": "date(at)"}[by]
+    with owner(ctx) as facade:
+        with facade.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    f"SELECT {column} AS bucket, COUNT(*) AS calls, "
+                    "SUM(cost_cny) AS total_cny FROM cost_ledger "
+                    f"WHERE est=0 GROUP BY {column} ORDER BY total_cny DESC LIMIT 200"
+                )
+            ).mappings()
+            output({"by": by, "items": [dict(r) for r in rows]})
+
+
+@budget_app.command("list")
+@guarded
+def budget_list(ctx: typer.Context, json_output: JsonOption = False):
+    with owner(ctx) as facade:
+        with facade.engine.connect() as connection:
+            rows = connection.execute(text("SELECT * FROM budgets ORDER BY rowid")).mappings()
+            output({"items": [dict(r) for r in rows]})
+
+
+@budget_app.command("set")
+@guarded
+def budget_set(
+    ctx: typer.Context,
+    id: str,
+    scope: Annotated[str, typer.Option(help="global | skill | engine | task")] = "skill",
+    scope_id: Annotated[str | None, typer.Option()] = None,
+    period: Annotated[str, typer.Option(help="day | month")] = "day",
+    limit_cny: Annotated[float | None, typer.Option(help="null 只记账不拦截")] = None,
+    soft_pct: Annotated[int, typer.Option(help="软提醒百分比")] = 80,
+    json_output: JsonOption = False,
+):
+    """设置或更新一条预算。"""
+    with owner(ctx) as facade:
+        with facade.engine.begin() as connection:
+            connection.execute(
+                text("""
+                INSERT INTO budgets(id,scope,scope_id,period,limit_cny,soft_pct)
+                VALUES(:id,:scope,:scope_id,:period,:limit,:soft)
+                  ON CONFLICT(id) DO UPDATE SET scope=:scope,scope_id=:scope_id,
+                    period=:period,limit_cny=:limit,soft_pct=:soft
+            """),
+                {
+                    "id": id,
+                    "scope": scope,
+                    "scope_id": scope_id,
+                    "period": period,
+                    "limit": limit_cny,
+                    "soft": soft_pct,
+                },
+            )
+            row = (
+                connection.execute(text("SELECT * FROM budgets WHERE id=:id"), {"id": id})
+                .mappings()
+                .first()
+            )
+            output(dict(row))
+
+
+@memory_app.command("add")
+@guarded
+def memory_add(
+    ctx: typer.Context,
+    title: str,
+    content: str,
+    kind: Annotated[str, typer.Option(help="fact | lesson | context | profile")] = "fact",
+    json_output: JsonOption = False,
+):
+    """新建一条记忆（写入前自动打码）。"""
+    from pa.memory.store import add_memory
+
+    with owner(ctx) as facade:
+        with facade.engine.begin() as connection:
+            output({"id": add_memory(connection, kind=kind, title=title, content=content)})
+
+
+@memory_app.command("search")
+@guarded
+def memory_search(
+    ctx: typer.Context,
+    q: Annotated[str, typer.Argument(help="检索关键词")],
+    json_output: JsonOption = False,
+):
+    """检索记忆库（vec → FTS5 → bigram 三级）。"""
+    from pa.memory.store import retrieve
+
+    with owner(ctx) as facade:
+        with facade.engine.connect() as connection:
+            output({"items": retrieve(connection, q)})
+
+
+@memory_app.command("list")
+@guarded
+def memory_list(ctx: typer.Context, json_output: JsonOption = False):
+    with owner(ctx) as facade:
+        with facade.engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT * FROM memories ORDER BY rowid DESC LIMIT 100")
+            ).mappings()
+            output({"items": [dict(r) for r in rows]})
+
+
+@memory_app.command("delete")
+@guarded
+def memory_delete(ctx: typer.Context, id: str, json_output: JsonOption = False):
+    with owner(ctx) as facade:
+        with facade.engine.begin() as connection:
+            result = connection.execute(text("DELETE FROM memories WHERE id=:id"), {"id": id})
+            if result.rowcount == 0:
+                raise PAError("memory not found", "not_found", 4)
+            output({"deleted": id})
+
+
+@sandbox_app.command("run")
+@guarded
+def sandbox_run(
+    ctx: typer.Context,
+    command: Annotated[str, typer.Argument(help='要执行的命令（shell 字符串），如 "echo hi"')],
+    timeout_min: Annotated[int, typer.Option(help="硬超时（分钟）")] = 15,
+    json_output: JsonOption = False,
+):
+    """通过可用后端运行命令；process 仅为开发运行器，不提供文件/网络隔离。"""
+    from pa.sandbox.backends import select_backend
+    from pa.sandbox.runtime import SandboxSpec, shell_command
+
+    runtime = None
+    sandbox_file = config_path(ctx) / "sandbox.yaml"
+    if sandbox_file.exists():
+        runtime = (yaml.safe_load(sandbox_file.read_text()) or {}).get("runtime")
+    backend, name = select_backend(runtime)
+    spec = SandboxSpec(command=shell_command(command), timeout_min=timeout_min)
+    result = backend.run(spec)
+    from dataclasses import asdict
+
+    output({"backend": name, **asdict(result)})
+
+
+@secret_app.command("rotate")
+@guarded
+def secret_rotate(
+    ctx: typer.Context,
+    ref: str,
+    connectivity_ok: Annotated[bool, typer.Option(help="连通性测试是否通过")] = True,
+    json_output: JsonOption = False,
+):
+    """登记一次密钥轮换（连通性通过才算完成）。"""
+    from pa.secrets.rotation import complete_rotation
+
+    with owner(ctx) as facade:
+        with facade.engine.begin() as connection:
+            output(complete_rotation(connection, ref, connectivity_ok=connectivity_ok))
+
+
+@secret_app.command("list-meta")
+@guarded
+def secret_list_meta(ctx: typer.Context, json_output: JsonOption = False):
+    """列出密钥轮换元数据（不含密钥值）。"""
+    from pa.secrets.rotation import due
+
+    with owner(ctx) as facade:
+        with facade.engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT ref,provider,rotated_at,rotate_every_days FROM secrets_meta")
+            ).mappings()
+            output({"items": [dict(r) for r in rows], "due": due(connection)})
+
+
+@secret_app.command("register")
+@guarded
+def secret_register(
+    ctx: typer.Context,
+    ref: str,
+    provider: Annotated[str, typer.Option(help="keychain | sops | 1password")] = "keychain",
+    rotate_every_days: Annotated[int, typer.Option(help="轮换周期（天）")] = 30,
+    json_output: JsonOption = False,
+):
+    """登记密钥的轮换元数据（只记元数据，不接触密钥值）。"""
+    from pa.secrets.rotation import register
+
+    with owner(ctx) as facade:
+        with facade.engine.begin() as connection:
+            register(connection, ref=ref, provider=provider, rotate_every_days=rotate_every_days)
+            output({"ref": ref, "provider": provider, "rotate_every_days": rotate_every_days})

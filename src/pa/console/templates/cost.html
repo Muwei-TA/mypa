@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>成本 <small>按天与 Skill 统计；预算设置预留</small></h1>
+<table class="waitlist">
+  <thead><tr><th>日期</th><th>Skill</th><th>记录数</th><th>合计 (CNY)</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.day }}</td>
+    <td>{{ row.skill_id or "—" }}</td>
+    <td>{{ row.tasks }}</td>
+    <td>{{ row.cost_cny or 0 }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4">暂无成本记录。</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

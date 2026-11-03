@@ -157,7 +157,12 @@ def ingest(connection: Connection, event: Event, config: LoadedConfig) -> dict:
                             "at": now(),
                             "mandate": json.dumps(mandate),
                             "policy": config.policy_version,
-                            "repo": rule.repo,
+                            "repo": rule.repo
+                            or (
+                                event.payload.get("repo")
+                                if isinstance(event.payload.get("repo"), str)
+                                else None
+                            ),
                             "key": event.subject
                             if rule.concurrency_key == "subject"
                             else rule.concurrency_key,
