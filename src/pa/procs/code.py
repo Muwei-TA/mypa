@@ -171,9 +171,17 @@ class CodeExecutor:
 
         if not entry.agent_token:
             raise PAError("SCM agent token is not configured", "code_setup_failed")
-        identities = {"agent": Identity("agent", resolve(entry.agent_token))}
+        agent_secret = resolve(entry.agent_token)
+        identities = {"agent": Identity("agent", agent_secret)}
         if entry.merger_token:
-            identities["merger"] = Identity("merger", resolve(entry.merger_token))
+            import hmac
+
+            merger_secret = resolve(entry.merger_token)
+            # A different reference may still resolve to the same credential.
+            # Never allow such an alias to defeat the D17 identity boundary.
+            if hmac.compare_digest(agent_secret, merger_secret):
+                raise PAError("SCM agent and merger tokens must differ", "code_setup_failed")
+            identities["merger"] = Identity("merger", merger_secret)
         url = entry.api_url or ("https://api.github.com" if entry.scm == "github" else "")
         if not url:
             raise PAError("Gitea api_url is required", "code_setup_failed")

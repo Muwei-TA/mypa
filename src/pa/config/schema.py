@@ -359,6 +359,8 @@ class CodeRepository(Model):
             raise ValueError("remote repositories must require pa/ai-review and ci_context")
         if len(self.required_checks) != len(set(self.required_checks)):
             raise ValueError("required_checks must not contain duplicates")
+        if self.agent_token and self.merger_token and self.agent_token == self.merger_token:
+            raise ValueError("agent and merger identities must use distinct secret references")
         if self.release_hook == "workflow_dispatch" and not self.release_workflow:
             raise ValueError("release workflow name is required")
         if self.verify_hook in {

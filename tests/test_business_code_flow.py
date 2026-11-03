@@ -741,3 +741,38 @@ def test_independent_review_stale_sha_never_posts_status(configured, tmp_path, m
     assert platform.status_updates == [] and platform.merges == []
     with configured.engine.connect() as c:
         assert c.execute(text("SELECT count(*) FROM reviews")).scalar_one() == 0
+
+
+def test_scm_config_rejects_same_agent_merger_secret_reference():
+    with pytest.raises(ValidationError):
+        CodeRepository(
+            scm="gitea",
+            remote="ssh://gitea@git.example.test:2222/o/sandbox.git",
+            api_url="https://git.example.test/api/v1",
+            agent_token="secret://env/PA_AGENT",
+            merger_token="secret://env/PA_AGENT",
+        )
+
+
+def test_scm_runtime_rejects_distinct_refs_resolving_same_token(monkeypatch, tmp_path):
+    from pa.common import PAError
+    from pa.procs.code import CodeExecutor
+
+    entry = CodeRepository(
+        scm="gitea",
+        remote="ssh://gitea@git.example.test:2222/o/sandbox.git",
+        api_url="https://git.example.test/api/v1",
+        agent_token="secret://env/PA_AGENT",
+        merger_token="secret://env/PA_MERGER",
+    )
+    monkeypatch.setattr("pa.secrets.resolver.resolve", lambda _: "aliased-token")
+    with pytest.raises(PAError, match="tokens must differ"):
+        CodeExecutor(None, tmp_path).adapter(entry)
+
+    def separate(ref):
+        return "agent-only" if ref.endswith("PA_AGENT") else "merger-only"
+
+    monkeypatch.setattr("pa.secrets.resolver.resolve", separate)
+    adapter = CodeExecutor(None, tmp_path).adapter(entry)
+    assert adapter.client.identity("agent").token == "agent-only"
+    assert adapter.client.identity("merger").token == "merger-only"
